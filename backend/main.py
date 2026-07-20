@@ -55,6 +55,21 @@ class GenerateRequest(BaseModel):
     description: str
 
 
+class ValidateManifestRequest(BaseModel):
+    manifest: dict
+
+
+def _ensure_valid_manifest(manifest: dict, message: str) -> dict:
+    """Return a valid manifest or raise the API's standard validation error."""
+    ok, errors = validate_manifest(manifest)
+    if not ok:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": message, "errors": errors},
+        )
+    return manifest
+
+
 @app.post("/generate")
 def generate(request: GenerateRequest) -> dict:
     """Turn a plain-text agent description into a manifest."""
@@ -70,18 +85,17 @@ def generate(request: GenerateRequest) -> dict:
         # opaque 500 so the frontend can show what actually went wrong.
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    ok, errors = validate_manifest(manifest)
-    if not ok:
-        # Validation is the gate: return the error list instead of a form.
-        # (Auto-retrying the LLM with these errors is deliberately deferred.)
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "Generated manifest failed validation.",
-                "errors": errors,
-            },
-        )
-    return manifest
+    # Validation is the gate: return the error list instead of a form.
+    # (Auto-retrying the LLM with these errors is deliberately deferred.)
+    return _ensure_valid_manifest(manifest, "Generated manifest failed validation.")
+
+
+@app.post("/validate")
+def validate_screen(request: ValidateManifestRequest) -> dict:
+    """Validate a human-reviewed draft before it reaches preview or storage."""
+    manifest = upgrade_legacy_layout(request.manifest)
+    _ensure_valid_manifest(manifest, "Manifest failed validation.")
+    return {"valid": True, "manifest": manifest}
 
 
 class SaveScreenRequest(BaseModel):
@@ -99,12 +113,7 @@ def save_screen(request: SaveScreenRequest) -> dict:
     generation: nothing invalid is ever stored.
     """
     manifest = upgrade_legacy_layout(request.manifest)
-    ok, errors = validate_manifest(manifest)
-    if not ok:
-        raise HTTPException(
-            status_code=422,
-            detail={"message": "Manifest failed validation.", "errors": errors},
-        )
+    _ensure_valid_manifest(manifest, "Manifest failed validation.")
 
     agent_id = slugify(request.name) or slugify(request.description)
     if not agent_id:

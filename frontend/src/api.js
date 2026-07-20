@@ -31,6 +31,23 @@ export async function generate(description) {
   return response.json()
 }
 
+// Validate a human-reviewed manifest before previewing or saving it.
+export async function validateScreen(manifest) {
+  const response = await fetch(`${API_BASE_URL}/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ manifest }),
+  })
+  if (!response.ok) {
+    throw new Error(await errorMessageFrom(response))
+  }
+  const result = await response.json()
+  if (!result?.valid || !result?.manifest) {
+    throw new Error('Backend returned an invalid validation response.')
+  }
+  return result.manifest
+}
+
 // Save a validated screen; returns {agent_id, version}.
 export async function saveScreen({ manifest, description, name }) {
   const response = await fetch(`${API_BASE_URL}/screens`, {

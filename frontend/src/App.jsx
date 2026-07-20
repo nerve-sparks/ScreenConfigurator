@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import FormRenderer from './FormRenderer.jsx'
+import ManifestReview from './ManifestReview.jsx'
 import Wizard from './Wizard.jsx'
-import { generate, loadScreen, saveScreen } from './api.js'
+import { generate, loadScreen, saveScreen, validateScreen } from './api.js'
 import { isWizardManifest, toUiSchema } from './manifestLayout.js'
+import { buildApprovedManifest, createReviewDraft } from './reviewModel.js'
 
 export default function App() {
   const [description, setDescription] = useState('')
   const [manifest, setManifest] = useState(null)
+  const [reviewDraft, setReviewDraft] = useState(null)
   // The description that actually produced the current manifest -- this,
   // not the (possibly edited) textarea value, is what gets saved with it.
   const [sourceDescription, setSourceDescription] = useState('')
@@ -19,27 +22,57 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [loadId, setLoadId] = useState('')
   const [loadingSaved, setLoadingSaved] = useState(false)
+  const [validatingReview, setValidatingReview] = useState(false)
 
   const handleGenerate = async () => {
     setLoading(true)
     setError(null)
     setNotice(null)
     setSubmitted(null)
+    setManifest(null)
+    setReviewDraft(null)
     try {
       const result = await generate(description.trim())
       if (!result?.input_schema) {
         throw new Error('Backend response is missing "input_schema".')
       }
-      setManifest(result)
+      setReviewDraft(createReviewDraft(result))
       setSourceDescription(description.trim())
-      // New key remounts the form so no stale field values survive.
-      setFormKey((key) => key + 1)
     } catch (err) {
       setManifest(null)
+      setReviewDraft(null)
       setError(err.message)
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleReviewComplete = async () => {
+    if (!reviewDraft) return
+    setValidatingReview(true)
+    setError(null)
+    setNotice(null)
+    setSubmitted(null)
+    try {
+      const candidate = buildApprovedManifest(reviewDraft)
+      const validated = await validateScreen(candidate)
+      setManifest(validated)
+      setNotice('Review complete. The approved inputs are ready to preview.')
+      // New key remounts the form so no stale field values survive.
+      setFormKey((key) => key + 1)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setValidatingReview(false)
+    }
+  }
+
+  const handleReturnToReview = () => {
+    if (!reviewDraft) return
+    setManifest(null)
+    setSubmitted(null)
+    setError(null)
+    setNotice(null)
   }
 
   const handleSave = async () => {
@@ -74,6 +107,7 @@ export default function App() {
         throw new Error('Saved screen is missing its manifest.')
       }
       setManifest(document.manifest)
+      setReviewDraft(null)
       setSourceDescription(document.description ?? '')
       setDescription(document.description ?? '')
       setNotice(`Loaded "${document.agent_id}" (version ${document.version}).`)
@@ -139,14 +173,40 @@ export default function App() {
       </div>
 
       {error && (
-        <div className="alert alert-danger" style={{ whiteSpace: 'pre-line' }}>
+        <div
+          className="alert alert-danger"
+          role="alert"
+          style={{ whiteSpace: 'pre-line' }}
+        >
           {error}
         </div>
       )}
-      {notice && <div className="alert alert-success">{notice}</div>}
+      {notice && (
+        <div className="alert alert-success" role="status">
+          {notice}
+        </div>
+      )}
+
+      {reviewDraft && !manifest && (
+        <ManifestReview
+          draft={reviewDraft}
+          onChange={setReviewDraft}
+          onContinue={handleReviewComplete}
+          continuing={validatingReview}
+        />
+      )}
 
       {manifest && (
         <>
+          {reviewDraft && (
+            <button
+              type="button"
+              className="btn btn-link px-0 mb-3"
+              onClick={handleReturnToReview}
+            >
+              ← Back to input review
+            </button>
+          )}
           <div className="form-group">
             <label htmlFor="screen-name">Save this screen</label>
             <div className="input-group">

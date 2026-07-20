@@ -11,7 +11,7 @@ import copy
 from fastapi import HTTPException
 
 import main
-from main import GenerateRequest
+from main import GenerateRequest, ValidateManifestRequest
 from validation import validate_manifest
 
 GOOD_MANIFEST = {
@@ -298,6 +298,30 @@ def test_generate_route_returns_422_on_bad_llm_output():
         assert raised.detail["errors"], "expected a non-empty error list"
     finally:
         main.generate_schema = original
+
+
+def test_validate_route_returns_validated_manifest():
+    result = main.validate_screen(
+        ValidateManifestRequest(manifest=copy.deepcopy(GOOD_MANIFEST))
+    )
+
+    assert result == {"valid": True, "manifest": GOOD_MANIFEST}
+
+
+def test_validate_route_returns_422_for_invalid_reviewed_manifest():
+    broken = copy.deepcopy(GOOD_MANIFEST)
+    broken["ui_hints"]["field_order"] = ["to", "unknown"]
+
+    raised = None
+    try:
+        main.validate_screen(ValidateManifestRequest(manifest=broken))
+    except HTTPException as exc:
+        raised = exc
+
+    assert raised is not None, "expected HTTPException to be raised"
+    assert raised.status_code == 422
+    assert raised.detail["message"] == "Manifest failed validation."
+    assert raised.detail["errors"]
 
 
 if __name__ == "__main__":
