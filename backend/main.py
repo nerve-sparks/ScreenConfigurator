@@ -16,6 +16,7 @@ from pymongo.errors import PyMongoError
 
 from db import ensure_indexes, get_manifest, save_manifest, slugify
 from llm import generate_schema
+from manifest_migrations import upgrade_legacy_layout
 from validation import validate_manifest
 
 # Vite dev server origins allowed to call this API.
@@ -97,7 +98,8 @@ def save_screen(request: SaveScreenRequest) -> dict:
     The validation gate applies to storage exactly as it does to
     generation: nothing invalid is ever stored.
     """
-    ok, errors = validate_manifest(request.manifest)
+    manifest = upgrade_legacy_layout(request.manifest)
+    ok, errors = validate_manifest(manifest)
     if not ok:
         raise HTTPException(
             status_code=422,
@@ -113,7 +115,7 @@ def save_screen(request: SaveScreenRequest) -> dict:
 
     try:
         version = save_manifest(
-            agent_id, request.manifest, request.description, request.source
+            agent_id, manifest, request.description, request.source
         )
     except (PyMongoError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
@@ -136,4 +138,5 @@ def get_screen(agent_id: str, version: Optional[int] = None) -> dict:
             status_code=404,
             detail=f"No saved screen found for agent_id '{agent_id}'.",
         )
+    document["manifest"] = upgrade_legacy_layout(document["manifest"])
     return document

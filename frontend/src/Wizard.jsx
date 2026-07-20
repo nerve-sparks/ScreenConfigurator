@@ -1,24 +1,6 @@
 import { useState } from 'react'
 import FormRenderer from './FormRenderer.jsx'
-
-// Slice the full input_schema down to just one group's fields, preserving
-// the group's own field order. Purely presentational: the set of fields was
-// fixed at generation time, and the backend has already validated that
-// every group field exists in properties (the Object.hasOwn filter is just
-// defense in depth).
-function schemaForGroup(inputSchema, group) {
-  const allProperties = inputSchema.properties ?? {}
-  const properties = {}
-  for (const name of group.fields) {
-    if (Object.hasOwn(allProperties, name)) {
-      properties[name] = allProperties[name]
-    }
-  }
-  const required = (inputSchema.required ?? []).filter((name) =>
-    Object.hasOwn(properties, name),
-  )
-  return { type: 'object', properties, required }
-}
+import { schemaForGroup } from './manifestLayout.js'
 
 /**
  * Multi-screen wizard (Step 6): one step per ui_hints.group.
@@ -29,13 +11,15 @@ function schemaForGroup(inputSchema, group) {
  * object which is handed to onSubmit at the very end.
  */
 export default function Wizard({ manifest, onSubmit }) {
-  const groups = manifest.ui_hints.groups
+  const groups = Array.isArray(manifest?.ui_hints?.groups)
+    ? manifest.ui_hints.groups
+    : []
   const [stepIndex, setStepIndex] = useState(0)
   const [stepData, setStepData] = useState(() => groups.map(() => ({})))
 
   const isLastStep = stepIndex === groups.length - 1
   const group = groups[stepIndex]
-  const schema = schemaForGroup(manifest.input_schema, group)
+  const schema = group ? schemaForGroup(manifest.input_schema, group) : null
 
   const handleChange = (formData) => {
     setStepData((previous) => {
@@ -53,7 +37,7 @@ export default function Wizard({ manifest, onSubmit }) {
     if (isLastStep) {
       onSubmit(Object.assign({}, ...next))
     } else {
-      setStepIndex(stepIndex + 1)
+      setStepIndex((index) => index + 1)
     }
   }
 
@@ -61,14 +45,19 @@ export default function Wizard({ manifest, onSubmit }) {
     setStepIndex((index) => Math.max(0, index - 1))
   }
 
+  // Generated and saved manifests pass backend validation, but this guard
+  // keeps the component safe if it is ever called with incomplete draft data.
+  if (!group || !schema) return null
+
   return (
     <div>
       <p className="text-muted mb-1">
         Step {stepIndex + 1} of {groups.length}
       </p>
       <h2 className="h5 mb-3">{group.title}</h2>
+      <p className="text-muted">{group.description}</p>
       <FormRenderer
-        key={stepIndex}
+        key={group.id ?? stepIndex}
         schema={schema}
         formData={stepData[stepIndex]}
         onChange={handleChange}

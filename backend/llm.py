@@ -2,7 +2,10 @@
 
 Turns a plain-text agent description into a manifest of the form:
 
-    {"input_schema": {...}, "ui_hints": {"field_order": [...]}}
+    {
+        "input_schema": {...},
+        "ui_hints": {"mode": "single" | "wizard", "field_order": [...]},
+    }
 
 No UI, no web route -- just the core transformation (Step 2).
 """
@@ -24,9 +27,13 @@ You convert a plain-text description of an AI agent into the specification
 of an input form for that agent.
 
 From the description, decide which inputs must be collected from the user,
-then return exactly one JSON object of this shape:
+then return exactly one JSON object. For a single-screen form, use this shape:
 
-{"input_schema": { ... }, "ui_hints": {"field_order": [ ... ]}}
+{"input_schema": { ... }, "ui_hints": {"mode": "single", "field_order": [ ... ]}}
+
+For a multi-screen wizard, use this shape:
+
+{"input_schema": { ... }, "ui_hints": {"mode": "wizard", "field_order": [ ... ], "groups": [{"id": "group-id", "title": "Group title", "description": "What this step collects", "fields": [ ... ]}]}}
 
 Rules:
 - "input_schema" must be a valid JSON Schema (draft 2020-12) with
@@ -38,6 +45,17 @@ Rules:
 - List a field in "required" only if the agent cannot work without it.
 - "ui_hints.field_order" must contain every key of "properties" exactly
   once, in a sensible display order.
+- Choose "single" for a short, coherent form with six or fewer simple fields.
+- Choose "wizard" when there are more than six fields OR when the inputs form
+  two or more clearly distinct sections and separating them would materially
+  improve comprehension. Do not create a wizard merely for visual effect.
+- A wizard must have between two and five meaningful groups. Aim for three to
+  five fields per group, but use fewer when a natural section is small.
+- Every wizard group needs a stable lowercase kebab-case "id", a concise
+  "title", a one-sentence "description", and a non-empty "fields" array.
+- In wizard mode, every property must occur in exactly one group. Concatenating
+  the groups' "fields" arrays must exactly equal "ui_hints.field_order".
+- In single mode, omit "groups".
 - Return strict JSON only: no prose, no explanations, no markdown fences.
 """
 

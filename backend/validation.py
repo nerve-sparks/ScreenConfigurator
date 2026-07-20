@@ -37,7 +37,9 @@ def _semantic_errors(manifest: dict) -> list[str]:
     errors = []
     properties = manifest["input_schema"]["properties"]
     required = manifest["input_schema"].get("required", [])
-    field_order = manifest["ui_hints"]["field_order"]
+    ui_hints = manifest["ui_hints"]
+    field_order = ui_hints["field_order"]
+    mode = ui_hints["mode"]
 
     seen = set()
     for name in field_order:
@@ -54,23 +56,104 @@ def _semantic_errors(manifest: dict) -> list[str]:
                 "which is not in input_schema.properties"
             )
 
+    for name in properties:
+        if name not in seen:
+            errors.append(
+                f"semantic: input_schema.properties defines '{name}', "
+                "which is missing from ui_hints.field_order"
+            )
+
+    seen_required = set()
     for name in required:
+        if name in seen_required:
+            errors.append(
+                f"semantic: input_schema.required lists '{name}' more than once"
+            )
+        seen_required.add(name)
         if name not in properties:
             errors.append(
                 f"semantic: input_schema.required names '{name}', "
                 "which is not in input_schema.properties"
             )
 
-    # groups is optional (Step 6); when present, every field named in
-    # every group must exist in properties.
-    groups = manifest["ui_hints"].get("groups", [])
+    groups = ui_hints.get("groups")
+    if mode == "single":
+        if groups:
+            errors.append(
+                "semantic: ui_hints.groups must be omitted when "
+                "ui_hints.mode is 'single'"
+            )
+        return errors
+
+    # Structural validation restricts mode to single/wizard, so reaching
+    # this point means mode == "wizard".
+    if not groups:
+        errors.append(
+            "semantic: ui_hints.groups is required when ui_hints.mode is 'wizard'"
+        )
+        return errors
+
+    if len(groups) < 2:
+        errors.append("semantic: wizard mode requires at least two groups")
+    if len(groups) > 5:
+        errors.append("semantic: wizard mode supports at most five groups")
+
+    seen_group_ids = set()
+    field_owner = {}
+    flattened_fields = []
+    has_group_reference_error = False
+
     for index, group in enumerate(groups):
+        group_id = group["id"]
+        group_title = group["title"]
+        if group_id in seen_group_ids:
+            errors.append(
+                f"semantic: ui_hints.groups uses id '{group_id}' more than once"
+            )
+        seen_group_ids.add(group_id)
+
+        seen_in_group = set()
         for name in group["fields"]:
+            flattened_fields.append(name)
+            if name in seen_in_group:
+                errors.append(
+                    f"semantic: ui_hints.groups[{index}] ('{group_title}') "
+                    f"lists '{name}' more than once"
+                )
+                has_group_reference_error = True
+                continue
+            seen_in_group.add(name)
+
             if name not in properties:
                 errors.append(
-                    f"semantic: ui_hints.groups[{index}] ('{group['title']}') "
+                    f"semantic: ui_hints.groups[{index}] ('{group_title}') "
                     f"names '{name}', which is not in input_schema.properties"
                 )
+                has_group_reference_error = True
+
+            if name in field_owner:
+                errors.append(
+                    f"semantic: field '{name}' appears in both group "
+                    f"'{field_owner[name]}' and group '{group_id}'"
+                )
+                has_group_reference_error = True
+            else:
+                field_owner[name] = group_id
+
+    for name in properties:
+        if name not in field_owner:
+            errors.append(
+                f"semantic: input field '{name}' is not assigned to any wizard group"
+            )
+            has_group_reference_error = True
+
+    # A single ordering invariant avoids two competing sources of truth in
+    # the renderer: group order + group field order must be the global order.
+    if not has_group_reference_error and flattened_fields != field_order:
+        errors.append(
+            "semantic: concatenating wizard group fields must exactly equal "
+            "ui_hints.field_order"
+        )
 
     return errors
 

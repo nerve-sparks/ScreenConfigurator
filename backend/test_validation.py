@@ -24,8 +24,34 @@ GOOD_MANIFEST = {
         },
         "required": ["to", "subject", "body"],
     },
-    "ui_hints": {"field_order": ["to", "subject", "body"]},
+    "ui_hints": {
+        "mode": "single",
+        "field_order": ["to", "subject", "body"],
+    },
 }
+
+
+def wizard_manifest() -> dict:
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"] = {
+        "mode": "wizard",
+        "field_order": ["to", "subject", "body"],
+        "groups": [
+            {
+                "id": "recipient",
+                "title": "Recipient",
+                "description": "Choose who should receive the email.",
+                "fields": ["to"],
+            },
+            {
+                "id": "message",
+                "title": "Message",
+                "description": "Write the subject and message body.",
+                "fields": ["subject", "body"],
+            },
+        ],
+    }
+    return manifest
 
 
 def test_good_manifest_passes():
@@ -50,10 +76,26 @@ def test_non_object_input_schema_type_is_rejected():
 
 def test_missing_field_order_is_rejected():
     manifest = copy.deepcopy(GOOD_MANIFEST)
-    manifest["ui_hints"] = {}
+    del manifest["ui_hints"]["field_order"]
     ok, errors = validate_manifest(manifest)
     assert not ok
     assert any("field_order" in error for error in errors)
+
+
+def test_missing_mode_is_rejected():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    del manifest["ui_hints"]["mode"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("mode" in error for error in errors)
+
+
+def test_unknown_mode_is_rejected():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"]["mode"] = "tabs"
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("single" in error and "wizard" in error for error in errors)
 
 
 def test_duplicate_name_in_field_order_is_rejected():
@@ -72,6 +114,14 @@ def test_field_order_naming_missing_field_is_rejected():
     assert any("attachment" in error for error in errors)
 
 
+def test_property_missing_from_field_order_is_rejected():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"]["field_order"] = ["to", "subject"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("body" in error and "missing" in error for error in errors)
+
+
 def test_required_naming_missing_field_is_rejected():
     manifest = copy.deepcopy(GOOD_MANIFEST)
     manifest["input_schema"]["required"] = ["to", "cc"]
@@ -80,32 +130,145 @@ def test_required_naming_missing_field_is_rejected():
     assert any("cc" in error for error in errors)
 
 
-def test_valid_groups_pass():
+def test_duplicate_required_field_is_rejected():
     manifest = copy.deepcopy(GOOD_MANIFEST)
-    manifest["ui_hints"]["groups"] = [
-        {"title": "Recipient", "fields": ["to"]},
-        {"title": "Message", "fields": ["subject", "body"]},
-    ]
+    manifest["input_schema"]["required"] = ["to", "to"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("required" in error and "more than once" in error for error in errors)
+
+
+def test_valid_groups_pass():
+    manifest = wizard_manifest()
     ok, errors = validate_manifest(manifest)
     assert ok, f"expected valid, got: {errors}"
 
 
-def test_group_naming_missing_field_is_rejected():
+def test_single_mode_rejects_groups():
     manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"]["groups"] = wizard_manifest()["ui_hints"]["groups"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("must be omitted" in error for error in errors)
+
+
+def test_wizard_mode_requires_groups():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"]["mode"] = "wizard"
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("groups is required" in error for error in errors)
+
+
+def test_wizard_mode_requires_at_least_two_groups():
+    manifest = wizard_manifest()
     manifest["ui_hints"]["groups"] = [
-        {"title": "Recipient", "fields": ["to", "cc"]},
+        {
+            "id": "all-inputs",
+            "title": "All inputs",
+            "description": "Provide all required email inputs.",
+            "fields": ["to", "subject", "body"],
+        }
     ]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("at least two groups" in error for error in errors)
+
+
+def test_wizard_mode_rejects_more_than_five_groups():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"] = [
+        {
+            "id": f"group-{index}",
+            "title": f"Group {index}",
+            "description": f"Collect the inputs for group {index}.",
+            "fields": ["to"],
+        }
+        for index in range(1, 7)
+    ]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("at most five groups" in error for error in errors)
+
+
+def test_group_naming_missing_field_is_rejected():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"][0]["fields"].append("cc")
     ok, errors = validate_manifest(manifest)
     assert not ok
     assert any("cc" in error and "Recipient" in error for error in errors)
 
 
 def test_group_without_fields_key_is_rejected_structurally():
-    manifest = copy.deepcopy(GOOD_MANIFEST)
-    manifest["ui_hints"]["groups"] = [{"title": "Recipient"}]
+    manifest = wizard_manifest()
+    del manifest["ui_hints"]["groups"][0]["fields"]
     ok, errors = validate_manifest(manifest)
     assert not ok
     assert any("structural" in error for error in errors)
+
+
+def test_group_without_description_is_rejected_structurally():
+    manifest = wizard_manifest()
+    del manifest["ui_hints"]["groups"][0]["description"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("description" in error for error in errors)
+
+
+def test_empty_group_is_rejected_structurally():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"][0]["fields"] = []
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("non-empty" in error for error in errors)
+
+
+def test_invalid_group_id_is_rejected_structurally():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"][0]["id"] = "Recipient Details"
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("does not match" in error for error in errors)
+
+
+def test_duplicate_group_id_is_rejected():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"][1]["id"] = "recipient"
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("id 'recipient' more than once" in error for error in errors)
+
+
+def test_field_repeated_within_group_is_rejected():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"][1]["fields"] = ["subject", "subject", "body"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("Message" in error and "more than once" in error for error in errors)
+
+
+def test_field_assigned_to_multiple_groups_is_rejected():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"][0]["fields"].append("subject")
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("subject" in error and "both group" in error for error in errors)
+
+
+def test_unassigned_wizard_field_is_rejected():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["groups"][1]["fields"] = ["subject"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("body" in error and "not assigned" in error for error in errors)
+
+
+def test_group_order_must_match_global_field_order():
+    manifest = wizard_manifest()
+    manifest["ui_hints"]["field_order"] = ["subject", "to", "body"]
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("exactly equal" in error for error in errors)
 
 
 def test_generate_route_returns_manifest_when_valid():

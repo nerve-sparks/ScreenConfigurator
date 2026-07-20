@@ -2,28 +2,7 @@ import { useState } from 'react'
 import FormRenderer from './FormRenderer.jsx'
 import Wizard from './Wizard.jsx'
 import { generate, loadScreen, saveScreen } from './api.js'
-
-// The wizard only applies when ui_hints.groups is a non-empty array;
-// otherwise the form stays a single screen (Step 6 is purely additive).
-function hasGroups(manifest) {
-  return (
-    Array.isArray(manifest?.ui_hints?.groups) &&
-    manifest.ui_hints.groups.length > 0
-  )
-}
-
-// Translate the manifest's ui_hints into an RJSF uiSchema.
-// Unknown names are dropped and a trailing '*' is appended so RJSF never
-// throws if field_order misses or invents a property.
-function toUiSchema(manifest) {
-  const order = manifest?.ui_hints?.field_order
-  const properties = manifest?.input_schema?.properties
-  if (!Array.isArray(order) || !properties) return undefined
-
-  const known = order.filter((name) => Object.hasOwn(properties, name))
-  if (known.length === 0) return undefined
-  return { 'ui:order': [...known, '*'] }
-}
+import { isWizardManifest, toUiSchema } from './manifestLayout.js'
 
 export default function App() {
   const [description, setDescription] = useState('')
@@ -192,7 +171,7 @@ export default function App() {
             </div>
           </div>
           <hr />
-          {hasGroups(manifest) ? (
+          {isWizardManifest(manifest) ? (
             <Wizard key={formKey} manifest={manifest} onSubmit={handleSubmit} />
           ) : (
             <FormRenderer
