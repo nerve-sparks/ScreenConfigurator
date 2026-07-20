@@ -5,6 +5,9 @@ export const REVIEW_STATUS = Object.freeze({
 })
 
 const VALID_REVIEW_STATUSES = new Set(Object.values(REVIEW_STATUS))
+const HUMAN_FIELD_TYPES = new Set(['string', 'number', 'integer', 'boolean'])
+const RESERVED_FIELD_NAMES = new Set(['__proto__', 'constructor', 'prototype'])
+const FIELD_NAME_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -22,6 +25,24 @@ function propertyNamesInOrder(manifest) {
     if (!seen.has(name)) ordered.push(name)
   }
   return ordered
+}
+
+/** Convert a user-facing label into a predictable JSON Schema property name. */
+export function fieldNameFromLabel(label) {
+  if (typeof label !== 'string') return ''
+
+  const normalized = label
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  if (!normalized) return ''
+  const withSafePrefix = /^[a-z]/.test(normalized)
+    ? normalized
+    : `field_${normalized}`
+  return withSafePrefix.slice(0, 64).replace(/_+$/g, '')
 }
 
 export function createReviewDraft(manifest) {
@@ -105,6 +126,97 @@ export function approveAllFields(draft) {
     fields[name] = { ...review, status: REVIEW_STATUS.APPROVED }
   }
   return { ...draft, fields }
+}
+
+/**
+ * Add a human-authored field to a review draft.
+ *
+ * Human fields are approved immediately because their creation is an explicit
+ * decision. Wizard fields must be assigned to an existing step; field_order is
+ * rebuilt from the groups so the backend's ordering invariant remains true.
+ */
+export function addHumanField(
+  draft,
+  { name, definition, required = false, groupId = null },
+) {
+  if (!draft?.manifest?.input_schema?.properties || !draft?.fields) {
+    throw new Error('A valid review draft is required.')
+  }
+
+  const fieldName = typeof name === 'string' ? name.trim() : ''
+  if (!fieldName) throw new Error('Field name is required.')
+  if (
+    fieldName.length > 64 ||
+    !FIELD_NAME_PATTERN.test(fieldName) ||
+    RESERVED_FIELD_NAMES.has(fieldName)
+  ) {
+    throw new Error(
+      'Use a field name of at most 64 characters with lowercase letters, numbers, and single underscores.',
+    )
+  }
+
+  const properties = draft.manifest.input_schema.properties
+  const duplicate = Object.keys(properties).some(
+    (existingName) => existingName.toLowerCase() === fieldName.toLowerCase(),
+  )
+  if (duplicate) {
+    throw new Error('An input with this field name already exists.')
+  }
+
+  if (!definition || typeof definition !== 'object') {
+    throw new Error('A field definition is required.')
+  }
+  if (!HUMAN_FIELD_TYPES.has(definition.type)) {
+    throw new Error('Choose a supported input type.')
+  }
+  if (typeof definition.title !== 'string' || !definition.title.trim()) {
+    throw new Error('Input label is required.')
+  }
+
+  const manifest = clone(draft.manifest)
+  const cleanDefinition = clone(definition)
+  cleanDefinition.title = cleanDefinition.title.trim()
+  manifest.input_schema.properties = {
+    ...manifest.input_schema.properties,
+    [fieldName]: cleanDefinition,
+  }
+
+  const previousOrder = propertyNamesInOrder(draft.manifest)
+  let fieldOrder
+  if (manifest.ui_hints.mode === 'wizard') {
+    const groups = manifest.ui_hints.groups ?? []
+    if (!groups.some((group) => group.id === groupId)) {
+      throw new Error('Choose a valid wizard step for this input.')
+    }
+    manifest.ui_hints.groups = groups.map((group) =>
+      group.id === groupId
+        ? { ...group, fields: [...group.fields, fieldName] }
+        : group,
+    )
+    fieldOrder = manifest.ui_hints.groups.flatMap((group) => group.fields)
+  } else {
+    fieldOrder = [...previousOrder, fieldName]
+  }
+  manifest.ui_hints.field_order = fieldOrder
+
+  const requiredFields = new Set(manifest.input_schema.required ?? [])
+  if (required) requiredFields.add(fieldName)
+  manifest.input_schema.required = fieldOrder.filter((field) =>
+    requiredFields.has(field),
+  )
+
+  return {
+    ...draft,
+    manifest,
+    fields: {
+      ...draft.fields,
+      [fieldName]: {
+        status: REVIEW_STATUS.APPROVED,
+        origin: 'human',
+        modified: true,
+      },
+    },
+  }
 }
 
 function markFieldAsHumanEdited(draft, name) {

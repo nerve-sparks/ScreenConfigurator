@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   REVIEW_STATUS,
+  addHumanField,
   approveAllFields,
   buildApprovedManifest,
   canContinueReview,
   createReviewDraft,
   deleteField,
+  fieldNameFromLabel,
   orderedReviewFields,
   reviewProgress,
   setFieldRequired,
@@ -50,7 +52,22 @@ const wizardManifest = {
   },
 }
 
+const singleManifest = {
+  input_schema: wizardManifest.input_schema,
+  ui_hints: {
+    mode: 'single',
+    field_order: ['to', 'subject', 'body', 'send_at'],
+  },
+}
+
 describe('review draft lifecycle', () => {
+  it('creates safe field names from user-facing labels', () => {
+    expect(fieldNameFromLabel('Target Language')).toBe('target_language')
+    expect(fieldNameFromLabel('  2nd Reviewer  ')).toBe('field_2nd_reviewer')
+    expect(fieldNameFromLabel('Crème brûlée')).toBe('creme_brulee')
+    expect(fieldNameFromLabel('---')).toBe('')
+  })
+
   it('starts every LLM field as pending without mutating the manifest', () => {
     const draft = createReviewDraft(wizardManifest)
 
@@ -151,6 +168,112 @@ describe('review draft lifecycle', () => {
     expect(draft.deletedFields).toEqual([
       { name: 'to', title: 'Recipient', origin: 'llm' },
     ])
+  })
+
+  it('adds an approved, required human field to a review draft', () => {
+    const draft = addHumanField(createReviewDraft(wizardManifest), {
+      name: 'review_notes',
+      definition: {
+        type: 'string',
+        title: 'Review notes',
+        description: 'Anything else the reviewer should know.',
+      },
+      required: true,
+      groupId: 'delivery',
+    })
+
+    expect(draft.manifest.input_schema.properties.review_notes).toEqual({
+      type: 'string',
+      title: 'Review notes',
+      description: 'Anything else the reviewer should know.',
+    })
+    expect(draft.manifest.input_schema.required).toContain('review_notes')
+    expect(draft.manifest.ui_hints.groups[2].fields).toEqual([
+      'send_at',
+      'review_notes',
+    ])
+    expect(draft.manifest.ui_hints.field_order).toEqual([
+      'to',
+      'subject',
+      'body',
+      'send_at',
+      'review_notes',
+    ])
+    expect(draft.fields.review_notes).toEqual({
+      status: REVIEW_STATUS.APPROVED,
+      origin: 'human',
+      modified: true,
+    })
+  })
+
+  it('appends a human field to a single-screen layout', () => {
+    const draft = addHumanField(createReviewDraft(singleManifest), {
+      name: 'tone',
+      definition: { type: 'string', title: 'Tone' },
+    })
+
+    expect(draft.manifest.ui_hints.field_order).toEqual([
+      'to',
+      'subject',
+      'body',
+      'send_at',
+      'tone',
+    ])
+    expect(draft.manifest.ui_hints).not.toHaveProperty('groups')
+  })
+
+  it('places a wizard field inside its chosen step without breaking order', () => {
+    const draft = addHumanField(createReviewDraft(wizardManifest), {
+      name: 'cc',
+      definition: { type: 'string', format: 'email', title: 'CC' },
+      groupId: 'recipient',
+    })
+
+    expect(draft.manifest.ui_hints.groups[0].fields).toEqual(['to', 'cc'])
+    expect(draft.manifest.ui_hints.field_order).toEqual([
+      'to',
+      'cc',
+      'subject',
+      'body',
+      'send_at',
+    ])
+  })
+
+  it('rejects duplicate, unsafe, and unassigned human fields', () => {
+    const draft = createReviewDraft(wizardManifest)
+    const definition = { type: 'string', title: 'Custom input' }
+
+    expect(() =>
+      addHumanField(draft, {
+        name: 'subject',
+        definition,
+        groupId: 'message',
+      }),
+    ).toThrow(/already exists/i)
+    expect(() =>
+      addHumanField(draft, {
+        name: '__proto__',
+        definition,
+        groupId: 'message',
+      }),
+    ).toThrow(/field name of at most 64 characters/i)
+    expect(() =>
+      addHumanField(draft, {
+        name: 'a'.repeat(65),
+        definition,
+        groupId: 'message',
+      }),
+    ).toThrow(/at most 64 characters/i)
+    expect(() =>
+      addHumanField(draft, {
+        name: 'custom_input',
+        definition,
+        groupId: 'missing',
+      }),
+    ).toThrow(/valid wizard step/i)
+    expect(draft.manifest.input_schema.properties).not.toHaveProperty(
+      'custom_input',
+    )
   })
 
   it('rejects finalization when every field is excluded', () => {

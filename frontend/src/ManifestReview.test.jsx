@@ -20,8 +20,30 @@ const manifest = {
   },
 }
 
-function ReviewHarness({ onContinue = () => {} }) {
-  const [draft, setDraft] = useState(() => createReviewDraft(manifest))
+const wizardManifest = {
+  ...manifest,
+  ui_hints: {
+    mode: 'wizard',
+    field_order: ['to', 'subject'],
+    groups: [
+      {
+        id: 'recipient',
+        title: 'Recipient details',
+        description: 'Choose who receives the message.',
+        fields: ['to'],
+      },
+      {
+        id: 'message',
+        title: 'Message details',
+        description: 'Compose the message.',
+        fields: ['subject'],
+      },
+    ],
+  },
+}
+
+function ReviewHarness({ onContinue = () => {}, initialManifest = manifest }) {
+  const [draft, setDraft] = useState(() => createReviewDraft(initialManifest))
   return (
     <ManifestReview
       draft={draft}
@@ -97,6 +119,68 @@ describe('ManifestReview', () => {
     expect(screen.getByText(/1 removed/)).toBeInTheDocument()
   })
 
+  it('adds a human-authored input as an approved field', async () => {
+    const user = userEvent.setup()
+    render(<ReviewHarness />)
+
+    await user.click(screen.getByRole('button', { name: /Add your own input/ }))
+    await user.type(
+      await screen.findByLabelText('Input label'),
+      'Notification email',
+    )
+    expect(screen.getByLabelText('Field name')).toHaveValue('notification_email')
+    await user.type(
+      screen.getByLabelText('Help text'),
+      'Language used for the final response.',
+    )
+    await user.selectOptions(screen.getByLabelText('Input type'), 'email')
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Make this input required' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Add input' }))
+
+    const card = fieldCard('Notification email')
+    expect(within(card).getByText('Human added')).toBeInTheDocument()
+    expect(within(card).getByText('approved')).toBeInTheDocument()
+    expect(within(card).getByText('notification_email')).toBeInTheDocument()
+    expect(within(card).getByText(/string · email/)).toBeInTheDocument()
+    expect(
+      within(card).getByRole('checkbox', { name: 'Required' }),
+    ).toBeChecked()
+  })
+
+  it('keeps the input builder open and explains duplicate names', async () => {
+    const user = userEvent.setup()
+    render(<ReviewHarness />)
+
+    await user.click(screen.getByRole('button', { name: /Add your own input/ }))
+    await user.type(await screen.findByLabelText('Input label'), 'Subject')
+    await user.click(screen.getByRole('button', { name: 'Add input' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /field name already exists/i,
+    )
+    expect(
+      screen.getByRole('heading', { name: 'Add your own input' }),
+    ).toBeInTheDocument()
+  })
+
+  it('places a human input in the selected wizard step', async () => {
+    const user = userEvent.setup()
+    render(<ReviewHarness initialManifest={wizardManifest} />)
+
+    await user.click(screen.getByRole('button', { name: /Add your own input/ }))
+    await user.type(await screen.findByLabelText('Input label'), 'CC')
+    await user.selectOptions(screen.getByLabelText('Wizard step'), 'recipient')
+    await user.click(screen.getByRole('button', { name: 'Add input' }))
+
+    expect(
+      screen
+        .getAllByRole('heading', { level: 3 })
+        .map((heading) => heading.textContent),
+    ).toEqual(['Recipient', 'CC', 'Subject'])
+  })
+
   it('locks review controls while the approved draft is being validated', () => {
     render(
       <ManifestReview
@@ -108,6 +192,9 @@ describe('ManifestReview', () => {
     )
 
     const card = fieldCard('Recipient')
+    expect(
+      screen.getByRole('button', { name: /Add your own input/ }),
+    ).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Approve all' })).toBeDisabled()
     expect(within(card).getByRole('checkbox', { name: 'Required' })).toBeDisabled()
     expect(within(card).getByRole('button', { name: 'Approve' })).toBeDisabled()

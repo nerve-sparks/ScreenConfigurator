@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 import {
   REVIEW_STATUS,
+  addHumanField,
   approveAllFields,
   canContinueReview,
   deleteField,
@@ -10,6 +11,8 @@ import {
   setFieldStatus,
   updateFieldDefinition,
 } from './reviewModel.js'
+
+const AddFieldForm = lazy(() => import('./AddFieldForm.jsx'))
 
 const EDITABLE_TYPES = ['string', 'number', 'integer', 'boolean']
 const STRING_FORMATS = ['', 'email', 'uri', 'date', 'date-time']
@@ -26,6 +29,21 @@ function statusBadge(status) {
   if (status === REVIEW_STATUS.APPROVED) return 'badge-success'
   if (status === REVIEW_STATUS.REJECTED) return 'badge-warning'
   return 'badge-secondary'
+}
+
+function originBadge(review) {
+  if (review.origin === 'human') {
+    return { className: 'badge-primary', label: 'Human added' }
+  }
+  if (review.modified) {
+    return { className: 'badge-info', label: 'AI suggested · Human edited' }
+  }
+  return { className: 'badge-info', label: 'AI suggested' }
+}
+
+function OriginBadge({ review }) {
+  const source = originBadge(review)
+  return <span className={`badge ${source.className}`}>{source.label}</span>
 }
 
 function FieldEditor({ name, schema, onSave, onCancel, disabled = false }) {
@@ -146,7 +164,12 @@ export default function ManifestReview({
   continuing = false,
 }) {
   const [editingField, setEditingField] = useState(null)
+  const [addingField, setAddingField] = useState(false)
   const fields = orderedReviewFields(draft)
+  const wizardGroups =
+    draft.manifest?.ui_hints?.mode === 'wizard'
+      ? (draft.manifest.ui_hints.groups ?? [])
+      : []
   const progress = reviewProgress(draft)
   const reviewed = progress.approved + progress.rejected
   const progressPercent = progress.total
@@ -154,7 +177,10 @@ export default function ManifestReview({
     : 0
 
   const update = (updater) => {
-    if (!continuing) onChange(updater(draft))
+    if (continuing) return draft
+    const updated = updater(draft)
+    onChange(updated)
+    return updated
   }
 
   return (
@@ -169,16 +195,30 @@ export default function ManifestReview({
               Approve, customize, or exclude every field before previewing.
             </p>
           </div>
-          <button
-            type="button"
-            className="btn btn-outline-success mt-2 mt-sm-0"
-            onClick={() => update(approveAllFields)}
-            disabled={
-              continuing || progress.total === 0 || progress.approved === progress.total
-            }
-          >
-            Approve all
-          </button>
+          <div className="d-flex flex-wrap mt-2 mt-sm-0">
+            <button
+              type="button"
+              className="btn btn-outline-primary mr-2 mb-2"
+              onClick={() => setAddingField((visible) => !visible)}
+              disabled={continuing}
+              aria-expanded={addingField}
+              aria-controls="add-field-form"
+            >
+              {addingField ? 'Close input builder' : '+ Add your own input'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline-success mb-2"
+              onClick={() => update(approveAllFields)}
+              disabled={
+                continuing ||
+                progress.total === 0 ||
+                progress.approved === progress.total
+              }
+            >
+              Approve all
+            </button>
+          </div>
         </div>
 
         <div className="progress my-3" style={{ height: '8px' }}>
@@ -197,6 +237,26 @@ export default function ManifestReview({
           {progress.rejected} excluded
           {progress.deleted > 0 ? ` · ${progress.deleted} removed` : ''}
         </p>
+
+        {addingField && (
+          <Suspense
+            fallback={
+              <div className="alert alert-info" role="status">
+                Opening input builder...
+              </div>
+            }
+          >
+            <AddFieldForm
+              groups={wizardGroups}
+              disabled={continuing}
+              onCancel={() => setAddingField(false)}
+              onAdd={(field) => {
+                update((current) => addHumanField(current, field))
+                setAddingField(false)
+              }}
+            />
+          </Suspense>
+        )}
 
         {fields.map(({ name, schema, required, review }) => (
           <article
@@ -217,9 +277,7 @@ export default function ManifestReview({
                     <span className={`badge ${statusBadge(review.status)} mr-1`}>
                       {review.status}
                     </span>
-                    <span className="badge badge-info">
-                      {review.modified ? 'AI suggested · Human edited' : 'AI suggested'}
-                    </span>
+                    <OriginBadge review={review} />
                   </div>
                   <div className="small text-muted">
                     <code>{name}</code> · {typeLabel(schema)}
@@ -319,7 +377,7 @@ export default function ManifestReview({
 
         {progress.total === 0 && (
           <div className="alert alert-warning">
-            Regenerate to get at least one input before continuing.
+            Add an input or regenerate before continuing.
           </div>
         )}
         {progress.pending === 0 && progress.approved === 0 && progress.total > 0 && (

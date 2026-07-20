@@ -76,4 +76,41 @@ describe('App review workflow', () => {
     expect(screen.getByRole('heading', { name: 'Review suggested inputs' })).toBeInTheDocument()
     expect(screen.queryByLabelText('Save this screen')).not.toBeInTheDocument()
   })
+
+  it('includes human-authored inputs in validation and preview', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.type(
+      screen.getByLabelText('Describe your agent'),
+      'An agent that researches a topic',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+    await screen.findByRole('heading', { name: 'Review suggested inputs' })
+
+    await user.click(screen.getByRole('button', { name: /Add your own input/ }))
+    await user.type(
+      await screen.findByLabelText('Input label'),
+      'Target language',
+    )
+    await user.selectOptions(screen.getByLabelText('Input type'), 'text')
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Make this input required' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Add input' }))
+    await user.click(screen.getByRole('button', { name: 'Approve all' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Continue to preview' }),
+    )
+
+    expect(validateScreen).toHaveBeenCalledOnce()
+    const reviewedManifest = validateScreen.mock.calls[0][0]
+    expect(reviewedManifest.input_schema.properties.target_language).toEqual({
+      type: 'string',
+      title: 'Target language',
+    })
+    expect(reviewedManifest.input_schema.required).toContain('target_language')
+    expect(reviewedManifest.ui_hints.field_order).toContain('target_language')
+    expect(await screen.findByLabelText(/Target language/)).toBeInTheDocument()
+  })
 })
