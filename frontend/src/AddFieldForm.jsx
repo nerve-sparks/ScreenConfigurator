@@ -91,7 +91,7 @@ export default function AddFieldForm({
   return (
     <form
       id="add-field-form"
-      className="card border-primary mb-3"
+      className="custom-field-builder card mb-3"
       onSubmit={handleSubmit}
     >
       <div className="card-body">

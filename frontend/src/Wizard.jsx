@@ -50,12 +50,27 @@ export default function Wizard({ manifest, onSubmit }) {
   if (!group || !schema) return null
 
   return (
-    <div>
-      <p className="text-muted mb-1">
+    <div className="wizard-shell">
+      <ol className="wizard-step-rail" aria-label="Form steps">
+        {groups.map((step, index) => (
+          <li
+            key={step.id ?? index}
+            className={`${index === stepIndex ? 'is-active' : ''} ${
+              index < stepIndex ? 'is-complete' : ''
+            }`}
+            aria-current={index === stepIndex ? 'step' : undefined}
+          >
+            <span className="sr-only">
+              {step.title}: {index < stepIndex ? 'complete' : index === stepIndex ? 'current' : 'upcoming'}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <p className="wizard-step-count text-muted mb-1">
         Step {stepIndex + 1} of {groups.length}
       </p>
       <h2 className="h5 mb-3">{group.title}</h2>
-      <p className="text-muted">{group.description}</p>
+      <p className="wizard-description text-muted">{group.description}</p>
       <FormRenderer
         key={group.id ?? stepIndex}
         schema={schema}
@@ -63,7 +78,7 @@ export default function Wizard({ manifest, onSubmit }) {
         onChange={handleChange}
         onSubmit={handleStepSubmit}
       >
-        <div className="d-flex justify-content-between mt-3">
+        <div className="wizard-actions d-flex justify-content-between mt-3">
           <button
             type="button"
             className="btn btn-outline-secondary"

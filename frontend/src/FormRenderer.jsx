@@ -36,15 +36,17 @@ export default function FormRenderer({
     : undefined
 
   return (
-    <Form
-      schema={schema}
-      uiSchema={uiSchema}
-      validator={validator}
-      formData={formData}
-      onChange={handleChange}
-      onSubmit={handleSubmit}
-    >
-      {children}
-    </Form>
+    <div className="agent-form">
+      <Form
+        schema={schema}
+        uiSchema={uiSchema}
+        validator={validator}
+        formData={formData}
+        onChange={handleChange}
+        onSubmit={handleSubmit}
+      >
+        {children}
+      </Form>
+    </div>
   )
 }

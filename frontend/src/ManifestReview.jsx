@@ -184,10 +184,11 @@ export default function ManifestReview({
   }
 
   return (
-    <section className="card mb-4" aria-labelledby="review-heading">
+    <section className="review-panel" aria-labelledby="review-heading">
       <div className="card-body">
-        <div className="d-flex flex-wrap justify-content-between align-items-start mb-2">
+        <div className="review-header d-flex flex-wrap justify-content-between align-items-start mb-2">
           <div>
+            <span className="section-kicker">AI input analysis</span>
             <h2 id="review-heading" className="h4 mb-1">
               Review suggested inputs
             </h2>
@@ -221,7 +222,7 @@ export default function ManifestReview({
           </div>
         </div>
 
-        <div className="progress my-3" style={{ height: '8px' }}>
+        <div className="progress my-3">
           <div
             className="progress-bar"
             role="progressbar"
@@ -261,7 +262,7 @@ export default function ManifestReview({
         {fields.map(({ name, schema, required, review }) => (
           <article
             key={name}
-            className={`card mb-3 ${
+            className={`review-field-card card mb-3 ${
               review.status === REVIEW_STATUS.APPROVED
                 ? 'border-success'
                 : review.status === REVIEW_STATUS.REJECTED
@@ -306,7 +307,7 @@ export default function ManifestReview({
                 </div>
               </div>
 
-              <div className="d-flex flex-wrap mt-3">
+              <div className="review-field-actions d-flex flex-wrap mt-3">
                 <button
                   type="button"
                   className="btn btn-sm btn-outline-success mr-2 mb-2"
@@ -386,7 +387,7 @@ export default function ManifestReview({
           </div>
         )}
 
-        <div className="d-flex justify-content-end">
+        <div className="review-footer d-flex justify-content-end">
           <button
             type="button"
             className="btn btn-primary"

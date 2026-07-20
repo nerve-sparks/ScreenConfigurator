@@ -40,6 +40,11 @@ describe('Wizard', () => {
     render(<Wizard manifest={manifest} onSubmit={onSubmit} />)
 
     expect(screen.getByText('Step 1 of 2')).toBeInTheDocument()
+    expect(
+      screen
+        .getByRole('list', { name: 'Form steps' })
+        .querySelector('[aria-current="step"]'),
+    ).toHaveTextContent('Recipient details: current')
     expect(screen.getByText(manifest.ui_hints.groups[0].description)).toBeInTheDocument()
 
     const recipient = screen.getByLabelText(/Recipient/)
@@ -47,6 +52,11 @@ describe('Wizard', () => {
     await user.click(screen.getByRole('button', { name: 'Next' }))
 
     expect(screen.getByText('Step 2 of 2')).toBeInTheDocument()
+    expect(
+      screen
+        .getByRole('list', { name: 'Form steps' })
+        .querySelector('[aria-current="step"]'),
+    ).toHaveTextContent('Message details: current')
     expect(screen.getByText(manifest.ui_hints.groups[1].description)).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Back' }))
