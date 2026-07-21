@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,8 +6,10 @@ import App from './App.jsx'
 import {
   generate,
   listScreens,
+  loadDraft,
   loadScreen,
-  saveScreen,
+  publishDraft,
+  saveDraft,
   validateScreen,
 } from './api.js'
 import { savePreviewDraft } from './routeDraft.js'
@@ -15,8 +17,10 @@ import { savePreviewDraft } from './routeDraft.js'
 vi.mock('./api.js', () => ({
   generate: vi.fn(),
   validateScreen: vi.fn(),
+  loadDraft: vi.fn(),
   loadScreen: vi.fn(),
-  saveScreen: vi.fn(),
+  saveDraft: vi.fn(),
+  publishDraft: vi.fn(),
   listScreens: vi.fn(),
 }))
 
@@ -64,9 +68,22 @@ beforeEach(() => {
   window.sessionStorage.clear()
   generate.mockResolvedValue(generatedManifest)
   validateScreen.mockImplementation(async (manifest) => manifest)
+  const notFound = new Error('No working draft found')
+  notFound.status = 404
+  loadDraft.mockRejectedValue(notFound)
   loadScreen.mockResolvedValue(savedDocument)
   listScreens.mockResolvedValue([])
-  saveScreen.mockResolvedValue({ agent_id: 'research-agent', version: 1 })
+  saveDraft.mockResolvedValue({
+    agent_id: 'an-agent-that-researches-a-topic',
+    status: 'draft',
+    revision: 'draft-revision-1',
+    published_version: null,
+  })
+  publishDraft.mockResolvedValue({
+    agent_id: 'research-agent',
+    status: 'published',
+    version: 1,
+  })
 })
 
 describe('builder route', () => {
@@ -86,7 +103,7 @@ describe('builder route', () => {
     ).toBeInTheDocument()
 
     expect(screen.getByRole('navigation', { name: 'Builder sections' })).toBeInTheDocument()
-    expect(screen.getByText('Draft')).toBeInTheDocument()
+    expect(screen.getByText('Draft not saved')).toBeInTheDocument()
 
     await user.click(
       screen.getByRole('button', { name: 'Use Research agent example' }),
@@ -127,7 +144,9 @@ describe('builder route', () => {
       }),
     ).toBeInTheDocument()
     expect(await screen.findByLabelText(/Topic/)).toBeInTheDocument()
-    expect(screen.getByLabelText('Screen name')).toBeInTheDocument()
+    expect(screen.getByLabelText('Screen ID')).toHaveValue(
+      'an-agent-that-researches-a-topic',
+    )
     expect(screen.getByRole('link', { name: /Back to builder/ })).toBeInTheDocument()
     expect(screen.queryByLabelText('Describe your agent')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Review suggested inputs' })).not.toBeInTheDocument()
@@ -157,6 +176,23 @@ describe('builder route', () => {
       'data-device',
       'mobile',
     )
+  })
+
+  it('autosaves edits as a draft without publishing a version', async () => {
+    const user = userEvent.setup()
+    renderApp()
+
+    await user.type(
+      await screen.findByLabelText('Describe your agent'),
+      'An agent that researches a topic',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+    await screen.findByRole('heading', { name: 'Review suggested inputs' })
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalled(), { timeout: 2000 })
+    expect(saveDraft.mock.calls[0][0]).toBe('an-agent-that-researches-a-topic')
+    expect(saveDraft.mock.calls[0][1]).not.toHaveProperty('approvedManifest')
+    expect(publishDraft).not.toHaveBeenCalled()
   })
 
   it('keeps the draft in review when backend validation rejects it', async () => {
@@ -225,10 +261,31 @@ describe('builder route', () => {
     expect(
       await screen.findByRole('heading', { name: 'Review suggested inputs' }),
     ).toBeInTheDocument()
+    expect(loadDraft).toHaveBeenCalledWith('research-agent')
     expect(loadScreen).toHaveBeenCalledWith('research-agent')
     expect(screen.getByText(/2 of 2 reviewed/)).toBeInTheDocument()
     expect(screen.getAllByText('Saved input')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Continue to preview' })).toBeEnabled()
+  })
+
+  it('reopens the mutable draft before falling back to a published version', async () => {
+    loadDraft.mockResolvedValueOnce({
+      agent_id: 'research-agent',
+      status: 'draft',
+      revision: 'draft-revision-2',
+      published_version: 2,
+      description: 'A draft research agent',
+      draft_manifest: generatedManifest,
+      editor_state: null,
+      presentation: savedDocument.presentation,
+    })
+
+    renderApp('/builder/research-agent/edit')
+
+    expect(await screen.findByText('Draft saved')).toBeInTheDocument()
+    expect(loadDraft).toHaveBeenCalledWith('research-agent')
+    expect(loadScreen).not.toHaveBeenCalled()
+    expect(screen.getByDisplayValue('A draft research agent')).toBeInTheDocument()
   })
 })
 
@@ -270,7 +327,7 @@ describe('separated screen routes', () => {
     expect(screen.queryByRole('heading', { name: 'Review suggested inputs' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open published screen' })).toHaveAttribute(
       'href',
-      '/screens/research-agent',
+      '/screens/research-agent?version=2',
     )
   })
 
@@ -290,11 +347,11 @@ describe('separated screen routes', () => {
     renderApp('/library')
 
     expect(await screen.findByRole('heading', { name: 'research-agent' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Preview' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Preview published' })).toHaveAttribute(
       'href',
       '/preview/research-agent',
     )
-    expect(screen.getByRole('link', { name: 'Edit' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Create draft' })).toHaveAttribute(
       'href',
       '/builder/research-agent/edit',
     )
@@ -304,37 +361,50 @@ describe('separated screen routes', () => {
     )
   })
 
-  it('saves a draft from preview and exposes its published route', async () => {
+  it('shows draft-only screens without a published route', async () => {
+    listScreens.mockResolvedValue([
+      {
+        agent_id: 'draft-agent',
+        name: 'Draft Agent',
+        latest_version: null,
+        has_draft: true,
+      },
+    ])
+    renderApp('/library')
+
+    expect(await screen.findByRole('heading', { name: 'Draft Agent' })).toBeInTheDocument()
+    expect(screen.getByText('Draft')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Continue editing' })).toHaveAttribute(
+      'href',
+      '/builder/draft-agent/edit',
+    )
+    expect(screen.queryByRole('link', { name: /Open published/ })).not.toBeInTheDocument()
+  })
+
+  it('publishes a validated draft and exposes its published route', async () => {
     const user = userEvent.setup()
     savePreviewDraft({
       manifest: generatedManifest,
       description: 'A research agent',
       returnPath: '/builder/new',
       reviewDraft: { manifest: generatedManifest, fields: {}, deletedFields: [] },
+      draftAgentId: 'research-agent',
+      draftRevision: 'draft-revision-1',
     })
     renderApp('/preview/draft')
 
     await screen.findByLabelText(/Topic/)
-    await user.type(screen.getByLabelText('Screen name'), 'Research Agent')
-    await user.click(screen.getByRole('button', { name: 'Save screen' }))
+    await user.clear(screen.getByLabelText('What changed?'))
+    await user.type(screen.getByLabelText('What changed?'), 'Initial research inputs')
+    await user.click(screen.getByRole('button', { name: 'Publish version' }))
 
-    expect(saveScreen).toHaveBeenCalledWith({
-      manifest: generatedManifest,
-      description: 'A research agent',
-      name: 'Research Agent',
-      presentation: {
-        accent_color: '#635bff',
-        display_name: 'Research Agent',
-        icon: 'sparkles',
-        show_summary: true,
-        submit_label: 'Submit',
-        welcome_description: 'A research agent',
-        welcome_title: 'Let’s get started',
-      },
+    expect(publishDraft).toHaveBeenCalledWith('research-agent', {
+      draftRevision: 'draft-revision-1',
+      changeSummary: 'Initial research inputs',
     })
     expect(await screen.findByRole('link', { name: 'Open published screen' })).toHaveAttribute(
       'href',
-      '/screens/research-agent',
+      '/screens/research-agent?version=1',
     )
     expect(screen.queryByLabelText('Screen name')).not.toBeInTheDocument()
   })

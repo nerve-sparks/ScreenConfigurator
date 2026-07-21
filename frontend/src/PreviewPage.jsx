@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { loadScreen, saveScreen } from './api.js'
+import { loadScreen, publishDraft } from './api.js'
 import { isWizardManifest } from './manifestLayout.js'
 import ScreenExperience from './ScreenExperience.jsx'
 import { normalizePresentation } from './presentation.js'
@@ -23,15 +23,14 @@ export default function PreviewPage() {
   const [loading, setLoading] = useState(!statePreview && !isDraftRoute)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
-  const [saving, setSaving] = useState(false)
-  const [name, setName] = useState(statePreview?.name ?? '')
+  const [publishing, setPublishing] = useState(false)
+  const [changeSummary, setChangeSummary] = useState('Initial published version')
   const [submitted, setSubmitted] = useState(null)
   const [formKey, setFormKey] = useState(0)
 
   useEffect(() => {
     if (statePreview) {
       setPayload(statePreview)
-      setName(statePreview.name ?? '')
       setLoading(false)
       setError(null)
       savePreviewDraft(statePreview)
@@ -42,7 +41,6 @@ export default function PreviewPage() {
       const stored = loadPreviewDraft()
       if (stored) {
         setPayload(stored)
-        setName(stored.name ?? '')
         setError(null)
       } else {
         setError('This preview draft is no longer available. Return to the builder and validate it again.')
@@ -54,7 +52,11 @@ export default function PreviewPage() {
     let cancelled = false
     setLoading(true)
     setError(null)
-    loadScreen(screenId)
+    const requestedVersion = Number.parseInt(
+      new URLSearchParams(location.search).get('version'),
+      10,
+    )
+    loadScreen(screenId, Number.isInteger(requestedVersion) ? requestedVersion : null)
       .then((document) => {
         if (cancelled) return
         if (!document?.manifest?.input_schema) {
@@ -73,7 +75,6 @@ export default function PreviewPage() {
           returnPath: encodedPath('/builder', document.agent_id, '/edit'),
           reviewDraft: null,
         })
-        setName(document.agent_id)
       })
       .catch((err) => {
         if (!cancelled) setError(err.message)
@@ -85,24 +86,19 @@ export default function PreviewPage() {
     return () => {
       cancelled = true
     }
-  }, [isDraftRoute, screenId, statePreview])
+  }, [isDraftRoute, location.search, screenId, statePreview])
 
-  const handleSave = async () => {
-    if (!payload?.manifest) return
-    setSaving(true)
+  const handlePublish = async () => {
+    if (!payload?.draftAgentId || !payload?.draftRevision) return
+    setPublishing(true)
     setError(null)
     setNotice(null)
     try {
-      const result = await saveScreen({
-        manifest: payload.manifest,
-        description: payload.description ?? '',
-        name,
-        presentation: normalizePresentation(payload.presentation, {
-          name,
-          description: payload.description ?? '',
-        }),
+      const result = await publishDraft(payload.draftAgentId, {
+        draftRevision: payload.draftRevision,
+        changeSummary: changeSummary.trim(),
       })
-      const savedPayload = {
+      const publishedPayload = {
         ...payload,
         name: result.agent_id,
         savedAgentId: result.agent_id,
@@ -110,18 +106,17 @@ export default function PreviewPage() {
         returnPath: encodedPath('/builder', result.agent_id, '/edit'),
         reviewDraft: null,
       }
-      setPayload(savedPayload)
-      setName(result.agent_id)
-      setNotice(`Saved as “${result.agent_id}” version ${result.version}.`)
-      savePreviewDraft(savedPayload)
-      navigate(encodedPath('/preview', result.agent_id), {
+      setPayload(publishedPayload)
+      setNotice(`Published “${result.agent_id}” version ${result.version}.`)
+      savePreviewDraft(publishedPayload)
+      navigate(`${encodedPath('/preview', result.agent_id)}?version=${result.version}`, {
         replace: true,
-        state: { preview: savedPayload },
+        state: { preview: publishedPayload },
       })
     } catch (err) {
       setError(err.message)
     } finally {
-      setSaving(false)
+      setPublishing(false)
     }
   }
 
@@ -151,10 +146,15 @@ export default function PreviewPage() {
 
   const fieldCount = Object.keys(payload.manifest.input_schema?.properties ?? {}).length
   const wizardMode = isWizardManifest(payload.manifest)
-  const savedAgentId = payload.savedAgentId ?? (!isDraftRoute ? screenId : null)
-  const canSaveDraft = Boolean(payload.reviewDraft) || isDraftRoute
-  const builderPath = payload.returnPath ?? (savedAgentId
-    ? encodedPath('/builder', savedAgentId, '/edit')
+  const savedAgentId = payload.version
+    ? (payload.savedAgentId ?? (!isDraftRoute ? screenId : null))
+    : null
+  const canPublishDraft = Boolean(
+    payload.reviewDraft && payload.draftAgentId && payload.draftRevision,
+  )
+  const editorAgentId = payload.draftAgentId ?? savedAgentId
+  const builderPath = payload.returnPath ?? (editorAgentId
+    ? encodedPath('/builder', editorAgentId, '/edit')
     : '/builder/new')
   const builderState = payload.reviewDraft
     ? {
@@ -164,6 +164,8 @@ export default function PreviewPage() {
           reviewDraft: payload.reviewDraft,
           presentation: payload.presentation,
           savedVersion: payload.version ?? null,
+          draftAgentId: payload.draftAgentId,
+          draftRevision: payload.draftRevision,
         },
       }
     : undefined
@@ -183,7 +185,7 @@ export default function PreviewPage() {
           {savedAgentId && (
             <Link
               className="btn btn-primary"
-              to={encodedPath('/screens', savedAgentId)}
+              to={`${encodedPath('/screens', savedAgentId)}?version=${payload.version}`}
             >
               Open published screen
             </Link>
@@ -198,7 +200,7 @@ export default function PreviewPage() {
         </div>
       )}
 
-      <div className={`preview-grid ${canSaveDraft ? '' : 'preview-grid-solo'}`}>
+      <div className={`preview-grid ${canPublishDraft ? '' : 'preview-grid-solo'}`}>
         <div>
           <div className="preview-route-meta" aria-label="Preview details">
             <span>{wizardMode ? 'Guided wizard' : 'Single screen'}</span>
@@ -212,36 +214,47 @@ export default function PreviewPage() {
             onSubmit={(formData) => setSubmitted(formData)}
             presentation={payload.presentation}
             description={payload.description ?? ''}
-            agentName={savedAgentId ?? name}
+            agentName={savedAgentId ?? payload.draftAgentId ?? payload.name}
           />
         </div>
 
-        {canSaveDraft && (
+        {canPublishDraft && (
           <aside className="save-screen-card">
-            <span className="save-card-icon" aria-hidden="true">↓</span>
-            <span className="section-kicker">Reusable screen</span>
-            <h2>Save this configuration</h2>
-            <p>Saving creates a new immutable version and makes the clean published route available.</p>
+            <span className="save-card-icon" aria-hidden="true">↑</span>
+            <span className="section-kicker">Draft validated</span>
+            <h2>Publish this version</h2>
+            <p>Your working draft is already saved. Publishing creates one immutable version without storing test inputs.</p>
             <div className="form-group">
-              <label htmlFor="screen-name">Screen name</label>
+              <label htmlFor="screen-id">Screen ID</label>
               <input
-                id="screen-name"
+                id="screen-id"
                 className="form-control"
                 type="text"
-                placeholder="e.g. Email Agent"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
+                value={payload.draftAgentId}
+                readOnly
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="change-summary">What changed?</label>
+              <textarea
+                id="change-summary"
+                className="form-control"
+                rows={3}
+                maxLength={240}
+                value={changeSummary}
+                onChange={(event) => setChangeSummary(event.target.value)}
+                placeholder="Summarize this version"
               />
             </div>
             <button
               type="button"
               className="btn btn-primary btn-block"
-              onClick={handleSave}
-              disabled={saving}
+              onClick={handlePublish}
+              disabled={publishing || !changeSummary.trim()}
             >
-              {saving ? 'Saving...' : 'Save screen'}
+              {publishing ? 'Publishing...' : 'Publish version'}
             </button>
-            <small>Leaving the name empty creates one from the agent brief.</small>
+            <small>Publishing the same draft revision twice is safely idempotent.</small>
           </aside>
         )}
       </div>

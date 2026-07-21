@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { loadScreen } from './api.js'
 import { normalizePresentation, presentationStyle } from './presentation.js'
 import ScreenExperience from './ScreenExperience.jsx'
@@ -7,6 +7,7 @@ import { AgentGlyph, SparkIcon, WorkspaceLoading } from './StudioShell.jsx'
 
 export default function PublishedScreenPage() {
   const { screenId } = useParams()
+  const location = useLocation()
   const [document, setDocument] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -18,7 +19,11 @@ export default function PublishedScreenPage() {
     setLoading(true)
     setError(null)
     setSubmitted(false)
-    loadScreen(screenId)
+    const requestedVersion = Number.parseInt(
+      new URLSearchParams(location.search).get('version'),
+      10,
+    )
+    loadScreen(screenId, Number.isInteger(requestedVersion) ? requestedVersion : null)
       .then((result) => {
         if (cancelled) return
         if (!result?.manifest?.input_schema) {
@@ -35,7 +40,7 @@ export default function PublishedScreenPage() {
     return () => {
       cancelled = true
     }
-  }, [screenId])
+  }, [location.search, screenId])
 
   if (loading) {
     return (

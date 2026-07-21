@@ -20,7 +20,7 @@ screen is rendered and saved.
 - Human-authored fields with configurable type and required state.
 - Placement of custom fields into a selected wizard step.
 - Backend validation before preview and before storage.
-- Immutable, versioned screen storage in MongoDB.
+- One mutable working draft per screen plus immutable published versions in MongoDB.
 - Loading previously saved screens without calling the LLM again.
 - Responsive desktop, tablet, and mobile interface.
 - Route-separated builder, preview, published screen, and saved library.
@@ -42,8 +42,9 @@ flowchart LR
     E --> F[Human input review]
     F --> G[FastAPI /validate]
     G --> H[Single screen or wizard preview]
-    H --> I[FastAPI /screens]
-    I --> J[(MongoDB versioned registry)]
+    H --> I[Mutable draft autosave]
+    I --> J[Explicit publish]
+    J --> K[(MongoDB draft and version registry)]
 ```
 
 The manifest is the contract shared by the LLM, backend, and frontend. It
@@ -57,8 +58,8 @@ contains:
 See [the manifest contract](backend/MANIFEST_CONTRACT.md) for examples and
 validation invariants.
 
-Visual settings are deliberately stored beside the manifest in each immutable
-screen version. They cannot change or bypass the validated input contract.
+Visual settings are stored in the working draft and copied into each immutable
+published version. They cannot change or bypass the validated input contract.
 
 ## Technology
 
@@ -68,7 +69,7 @@ screen version. They cannot change or bypass the validated input contract.
 | Backend | FastAPI, Pydantic, JSON Schema |
 | LLM gateway | LiteLLM |
 | Supported configuration | Google Vertex AI or Gemini API key |
-| Storage | MongoDB with immutable versioned documents |
+| Storage | MongoDB with mutable drafts and immutable published versions |
 | Testing | Vitest, Testing Library, pytest |
 
 ## Project structure
@@ -81,7 +82,7 @@ ScreenConfigurator/
 │   ├── validation.py            # Structural and semantic validation
 │   ├── meta_schema.py           # Manifest meta-schema
 │   ├── manifest_migrations.py   # Compatibility for older saved manifests
-│   ├── db.py                    # MongoDB versioned registry
+│   ├── db.py                    # MongoDB draft and published-version registry
 │   ├── MANIFEST_CONTRACT.md
 │   └── test_*.py
 ├── frontend/
@@ -278,14 +279,15 @@ Restart Vite after changing an environment variable.
 | --- | --- |
 | `/builder/new` | Generate and review a new input configuration. |
 | `/builder/{screenId}/edit` | Load a saved configuration into the editor. |
-| `/preview/draft` | Test the current validated, unsaved draft. |
+| `/preview/draft` | Test the current validated working draft. |
 | `/preview/{screenId}` | Test a saved screen without builder controls. |
 | `/screens/{screenId}` | Open the clean published input experience. |
 | `/library` | Browse saved configurations and choose edit, preview, or published routes. |
 
-The legacy root URL redirects to `/builder/new`. Unsaved validated previews are
+The legacy root URL redirects to `/builder/new`. The preview handoff is also
 kept in browser session storage so refreshing `/preview/draft` does not discard
-the current work. They are removed naturally when the browser session ends.
+the current test screen. Actual values typed while testing the preview remain
+in browser memory and are never sent to draft or publish storage.
 
 Production hosting must send unknown frontend paths to `index.html` so direct
 links such as `/screens/email-agent` can be handled by React Router.
@@ -302,8 +304,10 @@ links such as `/screens/email-agent` can be handled by React Router.
 7. Select **Continue to preview** or **Validate & preview** after all fields are
    reviewed. The application moves to the isolated `/preview/draft` route.
 8. Test the generated single-screen form or wizard without builder controls.
-9. Optionally give the screen a name and save it.
-10. Open the clean `/screens/{screenId}` input UI or manage it from `/library`.
+9. Confirm the generated screen ID, enter a short change summary, and select
+   **Publish version**.
+10. Open the clean `/screens/{screenId}` input UI or manage drafts and published
+    versions from `/library`.
 
 Human-authored fields are approved when they are created because their creation
 is already an explicit human decision. At least one field must remain approved
@@ -315,8 +319,11 @@ before the screen can reach preview.
 | --- | --- | --- |
 | `POST` | `/generate` | Generate and validate a manifest from an agent description. |
 | `POST` | `/validate` | Validate the human-reviewed manifest before preview. |
-| `POST` | `/screens` | Validate and save a new immutable screen version. |
-| `GET` | `/screens` | List saved screen IDs and their latest versions. |
+| `PUT` | `/screens/{agent_id}/draft` | Create or update the single mutable working draft. |
+| `GET` | `/screens/{agent_id}/draft` | Load the working draft and human-review state. |
+| `POST` | `/screens/{agent_id}/publish` | Validate and publish the current draft revision. |
+| `POST` | `/screens` | Legacy direct-publish endpoint for older clients. |
+| `GET` | `/screens` | List draft-only and published screens. |
 | `GET` | `/screens/{agent_id}` | Load the latest saved version. |
 | `GET` | `/screens/{agent_id}?version=2` | Load a specific saved version. |
 
@@ -336,15 +343,21 @@ Every manifest passes two validation layers:
 2. Semantic validation in `backend/validation.py`, including field references,
    ordering, required fields, and wizard-group ownership.
 
-The same gate applies during generation, human review, and saving. Invalid
-manifests are never rendered or stored.
+The strict gate applies during generation, preview, and publishing. An
+in-progress editor draft may be autosaved with validation errors so work is not
+lost, but it cannot reach preview or become a published version until it passes
+human review and backend validation.
 
-MongoDB saves are immutable:
+MongoDB uses two persistence states:
 
-- The first save receives version `1`.
-- Every later save for the same `agent_id` creates version `2`, `3`, and so on.
-- Existing versions are never updated in place.
+- Repeated autosaves update one mutable `status: "draft"` document.
+- Publishing the first validated draft receives version `1`.
+- Later explicit publishes create version `2`, `3`, and so on.
+- Existing published versions are never updated in place and remain loadable.
 - A unique MongoDB index prevents duplicate `(agent_id, version)` pairs.
+- A draft-revision index makes retrying the same publish request idempotent.
+- Preview submissions, agent output/history, credentials, and LLM reasoning are
+  not part of either storage document.
 
 ## Testing
 

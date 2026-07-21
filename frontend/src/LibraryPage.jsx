@@ -68,31 +68,45 @@ export default function LibraryPage() {
               <div className="library-card-heading">
                 <span className="library-card-icon"><SparkIcon size={20} /></span>
                 <div>
-                  <span className="section-kicker">Saved screen</span>
-                  <h2>{screen.agent_id}</h2>
+                  <span className="section-kicker">{screen.has_draft ? 'Working draft' : 'Published screen'}</span>
+                  <h2>{screen.name || screen.agent_id}</h2>
+                  {screen.name && <small>{screen.agent_id}</small>}
                 </div>
-                <span className="library-version">v{screen.latest_version}</span>
+                <div className="library-statuses">
+                  {screen.has_draft && <span className="library-draft-status">Draft</span>}
+                  {Number.isInteger(screen.latest_version) && (
+                    <span className="library-version">v{screen.latest_version}</span>
+                  )}
+                </div>
               </div>
-              <p>Latest immutable version: {screen.latest_version}</p>
+              <p>
+                {Number.isInteger(screen.latest_version)
+                  ? `Published version ${screen.latest_version}${screen.has_unpublished_changes ? ' · unpublished edits saved' : screen.has_draft ? ' · draft is up to date' : ''}`
+                  : 'Draft only · publish it when review and validation are complete'}
+              </p>
               <div className="library-card-actions">
+                {Number.isInteger(screen.latest_version) && (
+                  <Link
+                    className="btn btn-primary"
+                    to={screenPath('/preview', screen.agent_id)}
+                  >
+                    Preview published
+                  </Link>
+                )}
                 <Link
-                  className="btn btn-primary"
-                  to={screenPath('/preview', screen.agent_id)}
-                >
-                  Preview
-                </Link>
-                <Link
-                  className="btn btn-outline-secondary"
+                  className={Number.isInteger(screen.latest_version) ? 'btn btn-outline-secondary' : 'btn btn-primary'}
                   to={screenPath('/builder', screen.agent_id, '/edit')}
                 >
-                  Edit
+                  {screen.has_draft ? 'Continue editing' : 'Create draft'}
                 </Link>
-                <Link
-                  className="btn btn-link"
-                  to={screenPath('/screens', screen.agent_id)}
-                >
-                  Open published ↗
-                </Link>
+                {Number.isInteger(screen.latest_version) && (
+                  <Link
+                    className="btn btn-link"
+                    to={screenPath('/screens', screen.agent_id)}
+                  >
+                    Open published ↗
+                  </Link>
+                )}
               </div>
             </article>
           ))}

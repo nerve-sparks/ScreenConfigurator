@@ -1,6 +1,6 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { generate, loadScreen, validateScreen } from './api.js'
+import { generate, loadDraft, loadScreen, saveDraft, validateScreen } from './api.js'
 import { isWizardManifest } from './manifestLayout.js'
 import {
   REVIEW_STATUS,
@@ -19,6 +19,7 @@ import {
   presentationStyle,
 } from './presentation.js'
 import { savePreviewDraft } from './routeDraft.js'
+import { screenIdFrom } from './screenIdentity.js'
 import ScreenExperience from './ScreenExperience.jsx'
 import { AgentGlyph, SparkIcon, WorkspaceLoading } from './StudioShell.jsx'
 
@@ -47,6 +48,12 @@ const DEVICE_OPTIONS = [
   { value: 'tablet', label: 'Tablet', icon: '▯' },
   { value: 'mobile', label: 'Mobile', icon: '▯' },
 ]
+
+const AUTOSAVE_DELAY_MS = 700
+
+function draftSnapshot({ manifest, description, presentation, editorState }) {
+  return JSON.stringify({ manifest, description, presentation, editorState })
+}
 
 function DeviceToggle({ value, onChange }) {
   return (
@@ -285,7 +292,6 @@ export default function BuilderPage() {
   const navigate = useNavigate()
   const resumed = location.state?.builderDraft
   const editing = Boolean(screenId)
-  const returnPath = editing ? `/builder/${encodeURIComponent(screenId)}/edit` : '/builder/new'
 
   const initialState = useMemo(
     () => ({
@@ -297,6 +303,8 @@ export default function BuilderPage() {
         description: resumed?.description ?? '',
       }),
       savedVersion: resumed?.savedVersion ?? null,
+      draftAgentId: resumed?.draftAgentId ?? screenId ?? null,
+      draftRevision: resumed?.draftRevision ?? null,
     }),
     [resumed, screenId],
   )
@@ -306,6 +314,11 @@ export default function BuilderPage() {
   const [reviewDraft, setReviewDraft] = useState(initialState.reviewDraft)
   const [presentation, setPresentation] = useState(initialState.presentation)
   const [savedVersion, setSavedVersion] = useState(initialState.savedVersion)
+  const [draftAgentId, setDraftAgentId] = useState(initialState.draftAgentId)
+  const [draftRevision, setDraftRevision] = useState(initialState.draftRevision)
+  const [draftSaveStatus, setDraftSaveStatus] = useState(
+    initialState.draftRevision ? 'Draft saved' : 'Draft not saved',
+  )
   const [selectedFieldName, setSelectedFieldName] = useState(null)
   const [device, setDevice] = useState('desktop')
   const [loading, setLoading] = useState(false)
@@ -313,6 +326,8 @@ export default function BuilderPage() {
   const [validatingReview, setValidatingReview] = useState(false)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
+  const lastSavedSnapshotRef = useRef(null)
+  const autosavePromiseRef = useRef(Promise.resolve())
 
   const fields = useMemo(() => orderedReviewFields(reviewDraft), [reviewDraft])
   const selectedField = fields.find((field) => field.name === selectedFieldName) ?? null
@@ -320,7 +335,7 @@ export default function BuilderPage() {
   const reviewedCount = progress.approved + progress.rejected
   const progressPercent = progress.total ? Math.round((reviewedCount / progress.total) * 100) : 0
   const wizardMode = Boolean(reviewDraft && isWizardManifest(reviewDraft.manifest))
-  const projectTitle = presentation.display_name || screenId || 'Untitled agent'
+  const projectTitle = presentation.display_name || draftAgentId || screenId || 'Untitled agent'
 
   useEffect(() => {
     if (fields.length === 0) {
@@ -342,6 +357,20 @@ export default function BuilderPage() {
         description: resumed.description ?? '',
       }))
       setSavedVersion(resumed.savedVersion ?? null)
+      setDraftAgentId(resumed.draftAgentId ?? screenId ?? null)
+      setDraftRevision(resumed.draftRevision ?? null)
+      setDraftSaveStatus(resumed.draftRevision ? 'Draft saved' : 'Draft not saved')
+      lastSavedSnapshotRef.current = resumed.reviewDraft
+        ? draftSnapshot({
+            manifest: resumed.reviewDraft.manifest,
+            description: resumed.sourceDescription ?? resumed.description ?? '',
+            presentation: normalizePresentation(resumed.presentation, {
+              name: screenId ?? '',
+              description: resumed.description ?? '',
+            }),
+            editorState: resumed.reviewDraft,
+          })
+        : null
       setLoadingSaved(false)
       return undefined
     }
@@ -352,6 +381,10 @@ export default function BuilderPage() {
       setReviewDraft(null)
       setPresentation(normalizePresentation(null))
       setSavedVersion(null)
+      setDraftAgentId(null)
+      setDraftRevision(null)
+      setDraftSaveStatus('Draft not saved')
+      lastSavedSnapshotRef.current = null
       setLoadingSaved(false)
       setError(null)
       setNotice(null)
@@ -362,10 +395,46 @@ export default function BuilderPage() {
     setLoadingSaved(true)
     setError(null)
     setNotice(null)
-    loadScreen(screenId)
-      .then((document) => {
+    const openSavedEditor = async () => {
+      try {
+        const draft = await loadDraft(screenId)
         if (cancelled) return
-        if (!document?.manifest?.input_schema) throw new Error('Saved screen is missing its manifest.')
+        if (!draft?.draft_manifest?.input_schema) {
+          throw new Error('Saved draft is missing its manifest.')
+        }
+        const restoredReview = draft.editor_state?.manifest?.input_schema
+          ? draft.editor_state
+          : createReviewDraft(draft.draft_manifest)
+        const restoredPresentation = normalizePresentation(draft.presentation, {
+          name: draft.name || draft.agent_id,
+          description: draft.description ?? '',
+        })
+        setDescription(draft.description ?? '')
+        setSourceDescription(draft.description ?? '')
+        setPresentation(restoredPresentation)
+        setSavedVersion(draft.published_version ?? null)
+        setReviewDraft(restoredReview)
+        setDraftAgentId(draft.agent_id)
+        setDraftRevision(draft.revision)
+        setDraftSaveStatus('Draft saved')
+        lastSavedSnapshotRef.current = draftSnapshot({
+          manifest: restoredReview.manifest,
+          description: draft.description ?? '',
+          presentation: restoredPresentation,
+          editorState: restoredReview,
+        })
+        setNotice(`Editing the working draft for “${draft.agent_id}”.`)
+      } catch (draftError) {
+        if (draftError.status !== 404) throw draftError
+        const document = await loadScreen(screenId)
+        if (cancelled) return
+        if (!document?.manifest?.input_schema) {
+          throw new Error('Saved screen is missing its manifest.')
+        }
+        const restoredReview = createReviewDraft(document.manifest, {
+          status: REVIEW_STATUS.APPROVED,
+          origin: 'saved',
+        })
         setDescription(document.description ?? '')
         setSourceDescription(document.description ?? '')
         setPresentation(normalizePresentation(document.presentation, {
@@ -373,12 +442,15 @@ export default function BuilderPage() {
           description: document.description ?? '',
         }))
         setSavedVersion(document.version)
-        setReviewDraft(createReviewDraft(document.manifest, {
-          status: REVIEW_STATUS.APPROVED,
-          origin: 'saved',
-        }))
-        setNotice(`Editing “${document.agent_id}” version ${document.version}.`)
-      })
+        setReviewDraft(restoredReview)
+        setDraftAgentId(document.agent_id)
+        setDraftRevision(null)
+        lastSavedSnapshotRef.current = null
+        setNotice(`Created a working draft from published version ${document.version}.`)
+      }
+    }
+
+    openSavedEditor()
       .catch((err) => {
         if (!cancelled) setError(err.message)
       })
@@ -400,6 +472,13 @@ export default function BuilderPage() {
       const cleanDescription = description.trim()
       const result = await generate(cleanDescription)
       if (!result?.input_schema) throw new Error('Backend response is missing “input_schema”.')
+      const nextAgentId = draftAgentId
+        ?? screenId
+        ?? screenIdFrom(presentation.display_name || cleanDescription)
+      setDraftAgentId(nextAgentId || null)
+      setDraftRevision(null)
+      setDraftSaveStatus('Draft not saved')
+      lastSavedSnapshotRef.current = null
       setReviewDraft(createReviewDraft(result))
       setSourceDescription(cleanDescription)
       setPresentation((current) => normalizePresentation(current, {
@@ -415,6 +494,70 @@ export default function BuilderPage() {
     }
   }
 
+  useEffect(() => {
+    if (
+      !draftAgentId
+      || !reviewDraft
+      || loadingSaved
+      || loading
+      || validatingReview
+    ) return undefined
+
+    const normalizedPresentation = normalizePresentation(presentation, {
+      name: draftAgentId,
+      description: sourceDescription,
+    })
+    const snapshot = draftSnapshot({
+      manifest: reviewDraft.manifest,
+      description: sourceDescription,
+      presentation: normalizedPresentation,
+      editorState: reviewDraft,
+    })
+    if (snapshot === lastSavedSnapshotRef.current) return undefined
+
+    let cancelled = false
+    setDraftSaveStatus('Unsaved changes')
+    const timer = window.setTimeout(() => {
+      setDraftSaveStatus('Saving draft…')
+      const operation = autosavePromiseRef.current
+        .catch(() => undefined)
+        .then(() => saveDraft(draftAgentId, {
+          manifest: reviewDraft.manifest,
+          description: sourceDescription,
+          name: presentation.display_name || draftAgentId,
+          presentation: normalizedPresentation,
+          editorState: reviewDraft,
+        }))
+      autosavePromiseRef.current = operation
+      operation
+        .then((document) => {
+          if (cancelled) return
+          lastSavedSnapshotRef.current = snapshot
+          setDraftRevision(document.revision)
+          setSavedVersion(document.published_version ?? null)
+          setDraftSaveStatus('Draft saved')
+        })
+        .catch((err) => {
+          if (cancelled) return
+          setDraftSaveStatus('Draft save failed')
+          setError(`Draft autosave failed: ${err.message}`)
+        })
+    }, AUTOSAVE_DELAY_MS)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    draftAgentId,
+    loading,
+    loadingSaved,
+    presentation,
+    reviewDraft,
+    sourceDescription,
+    validatingReview,
+  ])
+
   const handleReviewComplete = async () => {
     if (!reviewDraft) return
     setValidatingReview(true)
@@ -423,18 +566,47 @@ export default function BuilderPage() {
     try {
       const candidate = buildApprovedManifest(reviewDraft)
       const manifest = await validateScreen(candidate)
+      const agentId = draftAgentId
+        ?? screenId
+        ?? screenIdFrom(presentation.display_name || sourceDescription)
+      if (!agentId) {
+        throw new Error('Add an agent name or a descriptive brief before publishing.')
+      }
+      await autosavePromiseRef.current.catch(() => undefined)
+      const normalizedPresentation = normalizePresentation(presentation, {
+        name: agentId,
+        description: sourceDescription,
+      })
+      const draft = await saveDraft(agentId, {
+        manifest: reviewDraft.manifest,
+        approvedManifest: manifest,
+        description: sourceDescription,
+        name: presentation.display_name || agentId,
+        presentation: normalizedPresentation,
+        editorState: reviewDraft,
+      })
+      const snapshot = draftSnapshot({
+        manifest: reviewDraft.manifest,
+        description: sourceDescription,
+        presentation: normalizedPresentation,
+        editorState: reviewDraft,
+      })
+      lastSavedSnapshotRef.current = snapshot
+      setDraftAgentId(agentId)
+      setDraftRevision(draft.revision)
+      setSavedVersion(draft.published_version ?? null)
+      setDraftSaveStatus('Draft saved')
       const preview = {
         manifest,
         description: sourceDescription,
-        name: screenId ?? presentation.display_name,
-        presentation: normalizePresentation(presentation, {
-          name: screenId ?? '',
-          description: sourceDescription,
-        }),
-        returnPath,
+        name: presentation.display_name || agentId,
+        presentation: normalizedPresentation,
+        returnPath: `/builder/${encodeURIComponent(agentId)}/edit`,
         reviewDraft,
         sourceDescription,
-        savedVersion,
+        savedVersion: draft.published_version ?? null,
+        draftAgentId: agentId,
+        draftRevision: draft.revision,
       }
       savePreviewDraft(preview)
       navigate('/preview/draft', { state: { preview } })
@@ -523,7 +695,7 @@ export default function BuilderPage() {
               <h1>{editing ? `Edit ${projectTitle}` : 'Create agent input UI'}</h1>
             </div>
             <div className="editor-topbar-actions">
-              <span className="editor-status-pill is-draft"><i /> Draft</span>
+              <span className="editor-status-pill is-draft"><i /> {draftSaveStatus}</span>
               {savedVersion && <span className="editor-status-pill is-published">Published v{savedVersion}</span>}
               <span className="editor-review-meter" aria-label={`${progressPercent}% of fields reviewed`}>
                 <span style={{ width: `${progressPercent}%` }} />

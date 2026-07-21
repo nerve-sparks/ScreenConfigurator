@@ -7,6 +7,7 @@ any specific agent name or type.
 """
 
 from contextlib import asynccontextmanager
+import os
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -14,8 +15,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 
-from db import ensure_indexes, get_manifest, list_agents, save_manifest, slugify
-from llm import generate_schema
+from db import (
+    ensure_indexes,
+    get_draft,
+    get_manifest,
+    list_agents,
+    publish_draft,
+    save_draft,
+    save_manifest,
+    slugify,
+)
+from llm import PROMPT_VERSION, generate_schema
 from manifest_migrations import upgrade_legacy_layout
 from validation import validate_manifest
 
@@ -121,12 +131,63 @@ class SaveScreenRequest(BaseModel):
     presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
 
 
+class SaveDraftRequest(BaseModel):
+    """Editor state only; preview submissions are intentionally not accepted."""
+
+    manifest: dict
+    approved_manifest: Optional[dict] = None
+    description: str = Field(default="", max_length=5000)
+    name: str = Field(default="", max_length=80)
+    source: Literal["llm", "manual"] = "llm"
+    presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
+    editor_state: dict = Field(default_factory=dict)
+
+
+class PublishDraftRequest(BaseModel):
+    draft_revision: str = Field(min_length=1, max_length=64)
+    change_summary: str = Field(min_length=1, max_length=240)
+
+
+def _validated_agent_id(agent_id: str) -> str:
+    normalized = slugify(agent_id)
+    if not normalized or normalized != agent_id:
+        raise HTTPException(
+            status_code=422,
+            detail="agent_id must be a lowercase kebab-case identifier.",
+        )
+    return normalized
+
+
+def _generation_metadata() -> dict:
+    """Return safe provenance only -- never gateway keys or model reasoning."""
+    gateway_enabled = os.getenv("LITE_LLM_ENABLE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    model = (
+        os.getenv("LITE_LLM_MODEL_GEMINI", "")
+        if gateway_enabled
+        else os.getenv("MODEL", "")
+    ).strip()
+    provider = "litellm_gateway" if gateway_enabled else (
+        model.split("/", 1)[0] if "/" in model else "litellm"
+    )
+    return {
+        "provider": provider,
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+    }
+
+
 @app.post("/screens")
 def save_screen(request: SaveScreenRequest) -> dict:
-    """Validate, then save as a new immutable version.
+    """Legacy direct-publish endpoint.
 
-    The validation gate applies to storage exactly as it does to
-    generation: nothing invalid is ever stored.
+    Step 7 clients use the draft and publish endpoints below. This route is
+    retained so older clients continue to work and still cannot store an
+    invalid manifest.
     """
     manifest = upgrade_legacy_layout(request.manifest)
     _ensure_valid_manifest(manifest, "Manifest failed validation.")
@@ -152,9 +213,120 @@ def save_screen(request: SaveScreenRequest) -> dict:
     return {"agent_id": agent_id, "version": version}
 
 
+@app.put("/screens/{agent_id}/draft")
+def put_screen_draft(agent_id: str, request: SaveDraftRequest) -> dict:
+    """Autosave one mutable working draft without creating a version."""
+    agent_id = _validated_agent_id(agent_id)
+    manifest = upgrade_legacy_layout(request.manifest)
+    valid, validation_errors = validate_manifest(manifest)
+
+    approved_manifest = None
+    if request.approved_manifest is not None:
+        approved_manifest = upgrade_legacy_layout(request.approved_manifest)
+        _ensure_valid_manifest(
+            approved_manifest,
+            "Approved manifest failed validation and cannot be published.",
+        )
+
+    try:
+        document = save_draft(
+            agent_id=agent_id,
+            draft_manifest=manifest,
+            description=request.description.strip(),
+            name=request.name.strip() or request.presentation.display_name or agent_id,
+            source=request.source,
+            presentation=request.presentation.model_dump(),
+            editor_state=request.editor_state,
+            validation_errors=[] if valid else validation_errors,
+            approved_manifest=approved_manifest,
+            generation=_generation_metadata(),
+        )
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+    return document
+
+
+@app.get("/screens/{agent_id}/draft")
+def get_screen_draft(agent_id: str) -> dict:
+    """Load the mutable editor state; no LLM call is involved."""
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        document = get_draft(agent_id)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No working draft found for agent_id '{agent_id}'.",
+        )
+    document["draft_manifest"] = upgrade_legacy_layout(document["draft_manifest"])
+    if document.get("approved_manifest"):
+        document["approved_manifest"] = upgrade_legacy_layout(
+            document["approved_manifest"]
+        )
+    return document
+
+
+@app.post("/screens/{agent_id}/publish")
+def publish_screen_draft(agent_id: str, request: PublishDraftRequest) -> dict:
+    """Create one immutable version from the current validated draft."""
+    agent_id = _validated_agent_id(agent_id)
+    change_summary = request.change_summary.strip()
+    if not change_summary:
+        raise HTTPException(status_code=422, detail="change_summary must not be empty")
+    try:
+        draft = get_draft(agent_id)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No working draft found for agent_id '{agent_id}'.",
+        )
+    if draft.get("revision") != request.draft_revision:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This draft changed after preview was opened. Return to the builder, "
+                "validate the latest draft, and try again."
+            ),
+        )
+
+    manifest = draft.get("approved_manifest")
+    if not manifest:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This draft has no approved manifest. Complete human review and "
+                "validation before publishing."
+            ),
+        )
+    manifest = upgrade_legacy_layout(manifest)
+    _ensure_valid_manifest(manifest, "Invalid drafts cannot be published.")
+
+    try:
+        version = publish_draft(
+            agent_id,
+            draft,
+            manifest,
+            change_summary,
+        )
+    except (PyMongoError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+    return {
+        "agent_id": agent_id,
+        "version": version,
+        "status": "published",
+    }
+
+
 @app.get("/screens")
 def list_screens() -> dict:
-    """Return every saved screen ID and its latest immutable version."""
+    """Return published and draft-only screens for the library."""
     try:
         screens = list_agents()
     except PyMongoError as exc:

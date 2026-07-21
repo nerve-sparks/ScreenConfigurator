@@ -37,6 +37,7 @@ _GATEWAY_ALIAS = "gemini"
 _MAX_TOKENS = 8000
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
+PROMPT_VERSION = "1"
 
 _router: Router | None = None
 
