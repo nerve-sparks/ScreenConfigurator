@@ -11,10 +11,10 @@ from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 
-from db import ensure_indexes, get_manifest, save_manifest, slugify
+from db import ensure_indexes, get_manifest, list_agents, save_manifest, slugify
 from llm import generate_schema
 from manifest_migrations import upgrade_legacy_layout
 from validation import validate_manifest
@@ -98,11 +98,27 @@ def validate_screen(request: ValidateManifestRequest) -> dict:
     return {"valid": True, "manifest": manifest}
 
 
+class ScreenPresentation(BaseModel):
+    """Human-controlled visual settings stored beside the validated manifest."""
+
+    display_name: str = Field(default="", max_length=80)
+    icon: Literal["sparkles", "bolt", "compass", "message"] = "sparkles"
+    accent_color: str = Field(default="#635bff", pattern=r"^#[0-9a-fA-F]{6}$")
+    welcome_title: str = Field(default="Let's get started", max_length=100)
+    welcome_description: str = Field(
+        default="Provide the details below so the agent can do its best work.",
+        max_length=240,
+    )
+    submit_label: str = Field(default="Submit", min_length=1, max_length=40)
+    show_summary: bool = True
+
+
 class SaveScreenRequest(BaseModel):
     manifest: dict
     description: str = ""
     name: str = ""
     source: Literal["llm", "manual"] = "llm"
+    presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
 
 
 @app.post("/screens")
@@ -124,12 +140,26 @@ def save_screen(request: SaveScreenRequest) -> dict:
 
     try:
         version = save_manifest(
-            agent_id, manifest, request.description, request.source
+            agent_id,
+            manifest,
+            request.description,
+            request.source,
+            request.presentation.model_dump(),
         )
     except (PyMongoError, RuntimeError) as exc:
         raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
 
     return {"agent_id": agent_id, "version": version}
+
+
+@app.get("/screens")
+def list_screens() -> dict:
+    """Return every saved screen ID and its latest immutable version."""
+    try:
+        screens = list_agents()
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    return {"screens": screens}
 
 
 @app.get("/screens/{agent_id}")

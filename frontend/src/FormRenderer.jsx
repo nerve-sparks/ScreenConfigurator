@@ -1,6 +1,43 @@
 import Form from '@rjsf/bootstrap-4'
 import validator from '@rjsf/validator-ajv8'
 
+function FileWidget({
+  id,
+  value,
+  required,
+  disabled,
+  readonly,
+  onChange,
+  schema,
+}) {
+  const handleFile = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      onChange(undefined)
+      return
+    }
+    const reader = new FileReader()
+    reader.addEventListener('load', () => onChange(reader.result))
+    reader.readAsDataURL(file)
+  }
+
+  return (
+    <div className={`file-drop-widget ${value ? 'has-file' : ''}`}>
+      <input
+        id={id}
+        type="file"
+        accept={schema.contentMediaType}
+        required={required && !value}
+        disabled={disabled || readonly}
+        onChange={handleFile}
+      />
+      <span className="file-drop-icon" aria-hidden="true">↑</span>
+      <strong>{value ? 'File ready' : 'Choose or drop a file'}</strong>
+      <small>{value ? 'Choose another file to replace it' : 'Your file stays in this form until submission'}</small>
+    </div>
+  )
+}
+
 /**
  * Generic form renderer.
  *
@@ -24,6 +61,8 @@ export default function FormRenderer({
   formData,
   onChange,
   children,
+  disabled = false,
+  submitLabel = 'Submit',
 }) {
   const handleSubmit = ({ formData: data }) => {
     if (onSubmit) {
@@ -44,8 +83,14 @@ export default function FormRenderer({
         formData={formData}
         onChange={handleChange}
         onSubmit={handleSubmit}
+        disabled={disabled}
+        widgets={{ FileWidget }}
       >
-        {children}
+        {children ?? (
+          <button type="submit" className="btn btn-primary agent-submit-button">
+            {submitLabel}
+          </button>
+        )}
       </Form>
     </div>
   )

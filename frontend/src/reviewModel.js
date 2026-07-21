@@ -45,14 +45,20 @@ export function fieldNameFromLabel(label) {
   return withSafePrefix.slice(0, 64).replace(/_+$/g, '')
 }
 
-export function createReviewDraft(manifest) {
+export function createReviewDraft(
+  manifest,
+  { status = REVIEW_STATUS.PENDING, origin = 'llm' } = {},
+) {
+  if (!VALID_REVIEW_STATUSES.has(status)) {
+    throw new Error('Choose a valid initial review status.')
+  }
   const copiedManifest = clone(manifest)
   const fields = {}
 
   for (const name of propertyNamesInOrder(copiedManifest)) {
     fields[name] = {
-      status: REVIEW_STATUS.PENDING,
-      origin: 'llm',
+      status,
+      origin,
       modified: false,
     }
   }

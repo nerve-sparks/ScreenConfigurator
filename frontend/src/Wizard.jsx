@@ -10,12 +10,26 @@ import { schemaForGroup } from './manifestLayout.js'
  * kept per step (so Back/Next never loses input) and merged into one
  * object which is handed to onSubmit at the very end.
  */
-export default function Wizard({ manifest, onSubmit }) {
+function summaryValue(value) {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (typeof value === 'string' && value.startsWith('data:')) return 'File attached'
+  if (value === undefined || value === null || value === '') return 'Not provided'
+  return String(value)
+}
+
+export default function Wizard({
+  manifest,
+  onSubmit,
+  disabled = false,
+  showSummary = false,
+  submitLabel = 'Submit',
+}) {
   const groups = Array.isArray(manifest?.ui_hints?.groups)
     ? manifest.ui_hints.groups
     : []
   const [stepIndex, setStepIndex] = useState(0)
   const [stepData, setStepData] = useState(() => groups.map(() => ({})))
+  const [showingSummary, setShowingSummary] = useState(false)
 
   const isLastStep = stepIndex === groups.length - 1
   const group = groups[stepIndex]
@@ -35,7 +49,8 @@ export default function Wizard({ manifest, onSubmit }) {
     next[stepIndex] = formData
     setStepData(next)
     if (isLastStep) {
-      onSubmit(Object.assign({}, ...next))
+      if (showSummary) setShowingSummary(true)
+      else onSubmit(Object.assign({}, ...next))
     } else {
       setStepIndex((index) => index + 1)
     }
@@ -49,6 +64,46 @@ export default function Wizard({ manifest, onSubmit }) {
   // keeps the component safe if it is ever called with incomplete draft data.
   if (!group || !schema) return null
 
+  const mergedData = Object.assign({}, ...stepData)
+
+  if (showingSummary) {
+    return (
+      <section className="wizard-summary" aria-labelledby="wizard-summary-title">
+        <div className="wizard-summary-heading">
+          <span className="wizard-step-count">Final review</span>
+          <h2 id="wizard-summary-title">Check your information</h2>
+          <p>Review the details below before sending them to the agent.</p>
+        </div>
+        <dl className="wizard-summary-list">
+          {manifest.ui_hints.field_order.map((name) => (
+            <div key={name}>
+              <dt>{manifest.input_schema.properties[name]?.title ?? name}</dt>
+              <dd>{summaryValue(mergedData[name])}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="wizard-actions">
+          <button
+            type="button"
+            className="btn btn-outline-secondary"
+            onClick={() => setShowingSummary(false)}
+            disabled={disabled}
+          >
+            Back to fields
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => onSubmit(mergedData)}
+            disabled={disabled}
+          >
+            {submitLabel}
+          </button>
+        </div>
+      </section>
+    )
+  }
+
   return (
     <div className="wizard-shell">
       <ol className="wizard-step-rail" aria-label="Form steps">
@@ -60,6 +115,10 @@ export default function Wizard({ manifest, onSubmit }) {
             }`}
             aria-current={index === stepIndex ? 'step' : undefined}
           >
+            <span className="wizard-step-marker" aria-hidden="true">
+              {index < stepIndex ? '✓' : index + 1}
+            </span>
+            <span className="wizard-step-label" aria-hidden="true">{step.title}</span>
             <span className="sr-only">
               {step.title}: {index < stepIndex ? 'complete' : index === stepIndex ? 'current' : 'upcoming'}
             </span>
@@ -77,18 +136,19 @@ export default function Wizard({ manifest, onSubmit }) {
         formData={stepData[stepIndex]}
         onChange={handleChange}
         onSubmit={handleStepSubmit}
+        disabled={disabled}
       >
         <div className="wizard-actions d-flex justify-content-between mt-3">
           <button
             type="button"
             className="btn btn-outline-secondary"
             onClick={handleBack}
-            disabled={stepIndex === 0}
+            disabled={disabled || stepIndex === 0}
           >
             Back
           </button>
-          <button type="submit" className="btn btn-primary">
-            {isLastStep ? 'Submit' : 'Next'}
+          <button type="submit" className="btn btn-primary" disabled={disabled}>
+            {isLastStep ? (showSummary ? 'Review answers' : submitLabel) : 'Next'}
           </button>
         </div>
       </FormRenderer>

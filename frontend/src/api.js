@@ -49,11 +49,11 @@ export async function validateScreen(manifest) {
 }
 
 // Save a validated screen; returns {agent_id, version}.
-export async function saveScreen({ manifest, description, name }) {
+export async function saveScreen({ manifest, description, name, presentation }) {
   const response = await fetch(`${API_BASE_URL}/screens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest, description, name }),
+    body: JSON.stringify({ manifest, description, name, presentation }),
   })
   if (!response.ok) {
     throw new Error(await errorMessageFrom(response))
@@ -70,4 +70,17 @@ export async function loadScreen(agentId) {
     throw new Error(await errorMessageFrom(response))
   }
   return response.json()
+}
+
+// List saved screen IDs with their latest immutable version.
+export async function listScreens() {
+  const response = await fetch(`${API_BASE_URL}/screens`)
+  if (!response.ok) {
+    throw new Error(await errorMessageFrom(response))
+  }
+  const result = await response.json()
+  if (!Array.isArray(result?.screens)) {
+    throw new Error('Backend returned an invalid screen-library response.')
+  }
+  return result.screens
 }

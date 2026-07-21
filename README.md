@@ -23,6 +23,13 @@ screen is rendered and saved.
 - Immutable, versioned screen storage in MongoDB.
 - Loading previously saved screens without calling the LLM again.
 - Responsive desktop, tablet, and mobile interface.
+- Route-separated builder, preview, published screen, and saved library.
+- Creation-tool editor with project navigation, a live device canvas, field
+  cards, draft/published status, and a properties inspector.
+- Versioned agent presentation settings: display name, icon, accent color,
+  welcome copy, submit label, and optional wizard answer summary.
+- File-upload fields rendered as focused drop areas when a field uses the
+  `data-url` format.
 
 ## How it works
 
@@ -50,6 +57,9 @@ contains:
 See [the manifest contract](backend/MANIFEST_CONTRACT.md) for examples and
 validation invariants.
 
+Visual settings are deliberately stored beside the manifest in each immutable
+screen version. They cannot change or bypass the validated input contract.
+
 ## Technology
 
 | Area | Technology |
@@ -76,7 +86,15 @@ ScreenConfigurator/
 │   └── test_*.py
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx              # Studio workflow and application state
+│   │   ├── App.jsx              # Route map and lazy route boundaries
+│   │   ├── BuilderPage.jsx      # New/edit configuration routes
+│   │   ├── PreviewPage.jsx      # Isolated draft and saved previews
+│   │   ├── PublishedScreenPage.jsx # Clean user-facing input route
+│   │   ├── LibraryPage.jsx      # Saved screen configuration picker
+│   │   ├── ScreenExperience.jsx # Shared single/wizard rendering surface
+│   │   ├── StudioShell.jsx      # Shared Studio navigation and route states
+│   │   ├── routeDraft.js        # Session-backed handoff to draft preview
+│   │   ├── presentation.js      # Agent branding defaults and normalization
 │   │   ├── ManifestReview.jsx   # Human approval workflow
 │   │   ├── AddFieldForm.jsx     # Human-authored input builder
 │   │   ├── FormRenderer.jsx     # Generic JSON Schema renderer
@@ -156,14 +174,45 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
-Choose one of the following LiteLLM configurations in `backend/.env`.
+Choose one of the following LiteLLM configurations in `backend/.env`. When
+`LITE_LLM_ENABLE=true`, the organization gateway takes precedence and `MODEL`
+is ignored. When the flag is absent or false, the existing direct provider
+configuration is used.
 
-These are the configurations provided and explicitly checked by the project.
-Other LiteLLM providers can be used by setting an appropriate `MODEL` and the
-provider credentials expected by LiteLLM, but they do not currently receive the
-same application-level configuration checks as Gemini and Vertex AI.
+#### Option A: Organization LiteLLM gateway
 
-#### Option A: Vertex AI
+Use this configuration for an OpenAI-compatible LiteLLM proxy:
+
+```dotenv
+LITE_LLM_ENABLE=true
+LITE_LLM_BASE_URL=https://your-litellm-gateway.example.com
+LITE_LLM_KEY=your-gateway-key
+LITE_LLM_MODEL_GEMINI=your-gateway-model-name
+MONGODB_URI=mongodb://localhost:27017
+```
+
+The application creates one shared LiteLLM `Router` and sends the gateway a
+JSON-object completion request with an 8,000-token output limit. The configured
+model name may be bare or start with `openai/`; the application adds that
+provider prefix when needed because the gateway uses the OpenAI-compatible wire
+format.
+
+Gateway responses are parsed as strict JSON first. Common truncation and syntax
+problems are repaired when possible, after which the normal structural and
+semantic manifest validation gates still apply.
+
+Optional generation-level Langfuse tracing activates when both keys are set:
+
+```dotenv
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+Langfuse records the selected model, user prompt, generated output, token usage,
+and latency. Leave the keys unset to disable tracing locally.
+
+#### Option B: Direct Vertex AI through LiteLLM
 
 ```dotenv
 MODEL=vertex_ai/gemini-3.5-flash
@@ -178,7 +227,7 @@ Authenticate locally with Application Default Credentials:
 gcloud auth application-default login
 ```
 
-#### Option B: Gemini API key
+#### Option C: Direct Gemini through LiteLLM
 
 ```dotenv
 MODEL=gemini/gemini-3.5-flash
@@ -189,6 +238,10 @@ MONGODB_URI=mongodb://localhost:27017
 Do not configure a placeholder key. The Google API will return
 `API_KEY_INVALID` when the value is missing, expired, restricted incorrectly,
 or copied incorrectly.
+
+Other direct LiteLLM providers can be used by setting an appropriate `MODEL`
+and the credentials expected by LiteLLM, but they do not currently receive the
+same application-level configuration checks as Gemini and Vertex AI.
 
 Start the backend from the `backend` directory:
 
@@ -219,17 +272,38 @@ VITE_API_URL=http://localhost:8001
 
 Restart Vite after changing an environment variable.
 
+### Frontend routes
+
+| Route | Purpose |
+| --- | --- |
+| `/builder/new` | Generate and review a new input configuration. |
+| `/builder/{screenId}/edit` | Load a saved configuration into the editor. |
+| `/preview/draft` | Test the current validated, unsaved draft. |
+| `/preview/{screenId}` | Test a saved screen without builder controls. |
+| `/screens/{screenId}` | Open the clean published input experience. |
+| `/library` | Browse saved configurations and choose edit, preview, or published routes. |
+
+The legacy root URL redirects to `/builder/new`. Unsaved validated previews are
+kept in browser session storage so refreshing `/preview/draft` does not discard
+the current work. They are removed naturally when the browser session ends.
+
+Production hosting must send unknown frontend paths to `index.html` so direct
+links such as `/screens/email-agent` can be handled by React Router.
+
 ## Using the application
 
 1. Describe the agent's job and the information it needs.
-2. Select **Generate**.
+2. Select **Generate inputs**.
 3. Review every AI-suggested input.
 4. Approve, edit, exclude, or remove fields.
 5. Add any missing human-authored inputs.
-6. Select **Continue to preview** after all fields are reviewed.
-7. Test the generated single-screen form or wizard.
-8. Optionally give the screen a name and save it.
-9. Load it later using its generated `agent_id`.
+6. Customize the agent identity and test desktop, tablet, or mobile sizes from
+   the live canvas.
+7. Select **Continue to preview** or **Validate & preview** after all fields are
+   reviewed. The application moves to the isolated `/preview/draft` route.
+8. Test the generated single-screen form or wizard without builder controls.
+9. Optionally give the screen a name and save it.
+10. Open the clean `/screens/{screenId}` input UI or manage it from `/library`.
 
 Human-authored fields are approved when they are created because their creation
 is already an explicit human decision. At least one field must remain approved
@@ -242,6 +316,7 @@ before the screen can reach preview.
 | `POST` | `/generate` | Generate and validate a manifest from an agent description. |
 | `POST` | `/validate` | Validate the human-reviewed manifest before preview. |
 | `POST` | `/screens` | Validate and save a new immutable screen version. |
+| `GET` | `/screens` | List saved screen IDs and their latest versions. |
 | `GET` | `/screens/{agent_id}` | Load the latest saved version. |
 | `GET` | `/screens/{agent_id}?version=2` | Load a specific saved version. |
 
@@ -305,6 +380,16 @@ their workflow stage needs them.
 - Restart FastAPI after editing `backend/.env`.
 - If using Vertex AI, remove the Gemini key requirement by using a
   `vertex_ai/...` model and authenticate with Application Default Credentials.
+
+### LiteLLM gateway configuration error
+
+- Set `LITE_LLM_ENABLE=true` only when all three gateway settings are present:
+  `LITE_LLM_BASE_URL`, `LITE_LLM_KEY`, and `LITE_LLM_MODEL_GEMINI`.
+- Use the gateway's base URL, not a model-specific endpoint URL.
+- Do not add quotes or trailing spaces around values in `backend/.env`.
+- Set `LITE_LLM_ENABLE=false` to return to the direct `MODEL` configuration.
+- Restart FastAPI after changing `backend/.env`; the shared router is created
+  once per backend process.
 
 ### Backend cannot reach MongoDB
 

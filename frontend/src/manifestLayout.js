@@ -39,7 +39,13 @@ export function toUiSchema(manifest) {
 
   const known = order.filter((name) => Object.hasOwn(properties, name))
   if (known.length === 0) return undefined
-  return { 'ui:order': [...known, '*'] }
+  const uiSchema = { 'ui:order': [...known, '*'] }
+  for (const name of known) {
+    if (properties[name]?.format === 'data-url') {
+      uiSchema[name] = { 'ui:widget': 'FileWidget' }
+    }
+  }
+  return uiSchema
 }
 
 /** Build the JSON Schema for one wizard group without dropping schema metadata. */

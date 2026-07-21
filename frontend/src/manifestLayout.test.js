@@ -68,6 +68,26 @@ describe('toUiSchema', () => {
       'ui:order': ['subject', 'to', 'body', '*'],
     })
   })
+
+  it('maps data-url fields to the polished file-drop widget', () => {
+    const manifest = {
+      input_schema: {
+        properties: {
+          attachment: {
+            type: 'string',
+            format: 'data-url',
+            title: 'Attachment',
+          },
+        },
+      },
+      ui_hints: { field_order: ['attachment'] },
+    }
+
+    expect(toUiSchema(manifest)).toEqual({
+      'ui:order': ['attachment', '*'],
+      attachment: { 'ui:widget': 'FileWidget' },
+    })
+  })
 })
 
 describe('schemaForGroup', () => {

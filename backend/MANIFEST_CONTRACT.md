@@ -25,6 +25,12 @@ execution behavior.
 
 Single-screen manifests omit `ui_hints.groups`.
 
+Field definitions can include normal JSON Schema descriptions, enums, and
+formats. The `data-url` string format represents a file input and is rendered
+as a file drop area. Agent name, icon, color, and welcome copy are presentation
+settings stored beside the manifest; they are not part of this validated
+input contract.
+
 ## Wizard
 
 ```json

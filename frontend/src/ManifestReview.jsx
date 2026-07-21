@@ -15,7 +15,7 @@ import {
 const AddFieldForm = lazy(() => import('./AddFieldForm.jsx'))
 
 const EDITABLE_TYPES = ['string', 'number', 'integer', 'boolean']
-const STRING_FORMATS = ['', 'email', 'uri', 'date', 'date-time']
+const STRING_FORMATS = ['', 'email', 'uri', 'date', 'date-time', 'data-url']
 
 function fieldDomId(name) {
   return name.replace(/[^a-zA-Z0-9_-]/g, '-')
@@ -34,6 +34,11 @@ function statusBadge(status) {
 function originBadge(review) {
   if (review.origin === 'human') {
     return { className: 'badge-primary', label: 'Human added' }
+  }
+  if (review.origin === 'saved') {
+    return review.modified
+      ? { className: 'badge-info', label: 'Saved input · Human edited' }
+      : { className: 'badge-secondary', label: 'Saved input' }
   }
   if (review.modified) {
     return { className: 'badge-info', label: 'AI suggested · Human edited' }
@@ -132,6 +137,7 @@ function FieldEditor({ name, schema, onSave, onCancel, disabled = false }) {
               <option value="uri">URL</option>
               <option value="date">Date</option>
               <option value="date-time">Date and time</option>
+              <option value="data-url">File upload</option>
             </select>
           </div>
         )}
@@ -162,6 +168,8 @@ export default function ManifestReview({
   onChange,
   onContinue,
   continuing = false,
+  selectedFieldName = null,
+  onSelectField,
 }) {
   const [editingField, setEditingField] = useState(null)
   const [addingField, setAddingField] = useState(false)
@@ -268,7 +276,7 @@ export default function ManifestReview({
                 : review.status === REVIEW_STATUS.REJECTED
                   ? 'border-warning'
                   : ''
-            }`}
+            } ${selectedFieldName === name ? 'is-selected' : ''}`}
           >
             <div className="card-body">
               <div className="d-flex flex-wrap justify-content-between align-items-start">
@@ -344,6 +352,18 @@ export default function ManifestReview({
                 >
                   {editingField === name ? 'Close editor' : 'Edit'}
                 </button>
+                {onSelectField && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary mr-2 mb-2"
+                    aria-label={`Inspect ${schema.title ?? name}`}
+                    aria-pressed={selectedFieldName === name}
+                    onClick={() => onSelectField(name)}
+                    disabled={continuing}
+                  >
+                    Inspect
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn btn-sm btn-outline-danger mb-2"

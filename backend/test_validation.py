@@ -9,9 +9,10 @@ Or, if you prefer pytest:
 import copy
 
 from fastapi import HTTPException
+from pymongo.errors import PyMongoError
 
 import main
-from main import GenerateRequest, ValidateManifestRequest
+from main import GenerateRequest, ScreenPresentation, ValidateManifestRequest
 from validation import validate_manifest
 
 GOOD_MANIFEST = {
@@ -322,6 +323,68 @@ def test_validate_route_returns_422_for_invalid_reviewed_manifest():
     assert raised.status_code == 422
     assert raised.detail["message"] == "Manifest failed validation."
     assert raised.detail["errors"]
+
+
+def test_presentation_rejects_invalid_accent_and_icon():
+    for values in (
+        {"accent_color": "purple"},
+        {"icon": "robot"},
+        {"submit_label": ""},
+    ):
+        raised = None
+        try:
+            ScreenPresentation(**values)
+        except ValueError as exc:
+            raised = exc
+        assert raised is not None
+
+
+def test_presentation_accepts_human_controlled_branding():
+    presentation = ScreenPresentation(
+        display_name="Research Copilot",
+        icon="compass",
+        accent_color="#0e9384",
+        welcome_title="Plan your research",
+        welcome_description="Tell us what you need to investigate.",
+        submit_label="Create brief",
+        show_summary=False,
+    )
+
+    assert presentation.model_dump()["display_name"] == "Research Copilot"
+    assert presentation.model_dump()["show_summary"] is False
+
+
+def test_list_screens_returns_latest_registry_entries():
+    original = main.list_agents
+    main.list_agents = lambda: [
+        {"agent_id": "email-agent", "latest_version": 3},
+        {"agent_id": "research-agent", "latest_version": 1},
+    ]
+    try:
+        assert main.list_screens() == {
+            "screens": [
+                {"agent_id": "email-agent", "latest_version": 3},
+                {"agent_id": "research-agent", "latest_version": 1},
+            ]
+        }
+    finally:
+        main.list_agents = original
+
+
+def test_list_screens_reports_database_failures():
+    original = main.list_agents
+    main.list_agents = lambda: (_ for _ in ()).throw(PyMongoError("offline"))
+    try:
+        raised = None
+        try:
+            main.list_screens()
+        except HTTPException as exc:
+            raised = exc
+        assert raised is not None
+        assert raised.status_code == 503
+        assert "Database error" in raised.detail
+    finally:
+        main.list_agents = original
 
 
 if __name__ == "__main__":

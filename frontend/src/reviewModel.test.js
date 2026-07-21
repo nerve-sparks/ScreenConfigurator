@@ -88,6 +88,29 @@ describe('review draft lifecycle', () => {
     expect(wizardManifest.input_schema.properties.to.title).toBe('Recipient')
   })
 
+  it('can initialize saved fields as approved for the edit route', () => {
+    const draft = createReviewDraft(wizardManifest, {
+      status: REVIEW_STATUS.APPROVED,
+      origin: 'saved',
+    })
+
+    expect(reviewProgress(draft)).toEqual({
+      total: 4,
+      pending: 0,
+      approved: 4,
+      rejected: 0,
+      deleted: 0,
+    })
+    expect(orderedReviewFields(draft).every((field) => field.review.origin === 'saved')).toBe(true)
+    expect(canContinueReview(draft)).toBe(true)
+  })
+
+  it('rejects an unsupported initial review status', () => {
+    expect(() => createReviewDraft(wizardManifest, { status: 'unknown' })).toThrow(
+      /valid initial review status/i,
+    )
+  })
+
   it('requires every field decision and at least one approval', () => {
     let draft = createReviewDraft(wizardManifest)
     draft = setFieldStatus(draft, 'to', REVIEW_STATUS.APPROVED)

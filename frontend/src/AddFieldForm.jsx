@@ -23,6 +23,11 @@ const INPUT_KINDS = [
     label: 'Date and time',
     schema: { type: 'string', format: 'date-time' },
   },
+  {
+    value: 'file',
+    label: 'File upload',
+    schema: { type: 'string', format: 'data-url' },
+  },
   { value: 'number', label: 'Number', schema: { type: 'number' } },
   { value: 'integer', label: 'Whole number', schema: { type: 'integer' } },
   { value: 'boolean', label: 'Yes / No', schema: { type: 'boolean' } },

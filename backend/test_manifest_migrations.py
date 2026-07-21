@@ -87,12 +87,13 @@ def test_current_contract_is_not_silently_repaired():
 def test_save_route_upgrades_legacy_manifest_before_persisting(monkeypatch):
     captured = {}
 
-    def fake_save(agent_id, manifest, description, source):
+    def fake_save(agent_id, manifest, description, source, presentation):
         captured.update(
             agent_id=agent_id,
             manifest=manifest,
             description=description,
             source=source,
+            presentation=presentation,
         )
         return 1
 
@@ -108,6 +109,7 @@ def test_save_route_upgrades_legacy_manifest_before_persisting(monkeypatch):
 
     assert result == {"agent_id": "legacy-email-agent", "version": 1}
     assert captured["manifest"]["ui_hints"]["mode"] == "single"
+    assert captured["presentation"]["accent_color"] == "#635bff"
 
 
 def test_load_route_upgrades_legacy_manifest_in_response(monkeypatch):

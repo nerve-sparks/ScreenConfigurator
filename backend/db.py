@@ -59,7 +59,13 @@ def _next_version(agent_id: str) -> int:
     return latest["version"] + 1 if latest else 1
 
 
-def save_manifest(agent_id: str, manifest: dict, description: str, source: str) -> int:
+def save_manifest(
+    agent_id: str,
+    manifest: dict,
+    description: str,
+    source: str,
+    presentation: Optional[dict] = None,
+) -> int:
     """Insert a new immutable document and return its version.
 
     Never updates an existing document: every save is an insert with the
@@ -73,6 +79,7 @@ def save_manifest(agent_id: str, manifest: dict, description: str, source: str) 
             "manifest": manifest,
             "description": description,
             "source": source,
+            "presentation": presentation or {},
             "created_at": datetime.now(timezone.utc)
             .isoformat(timespec="seconds")
             .replace("+00:00", "Z"),

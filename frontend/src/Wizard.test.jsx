@@ -74,4 +74,34 @@ describe('Wizard', () => {
       body: 'Welcome aboard',
     })
   })
+
+  it('can show a final answer summary before submission', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    render(
+      <Wizard
+        manifest={manifest}
+        onSubmit={onSubmit}
+        showSummary
+        submitLabel="Send to agent"
+      />,
+    )
+
+    await user.type(screen.getByLabelText(/Recipient/), 'person@example.com')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await user.type(screen.getByLabelText(/Subject/), 'Hello')
+    await user.type(screen.getByLabelText(/Message/), 'Welcome aboard')
+    await user.click(screen.getByRole('button', { name: 'Review answers' }))
+
+    expect(screen.getByRole('heading', { name: 'Check your information' })).toBeInTheDocument()
+    expect(screen.getByText('person@example.com')).toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Send to agent' }))
+    expect(onSubmit).toHaveBeenCalledWith({
+      to: 'person@example.com',
+      subject: 'Hello',
+      body: 'Welcome aboard',
+    })
+  })
 })
