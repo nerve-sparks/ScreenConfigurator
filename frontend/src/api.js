@@ -158,3 +158,66 @@ export async function listScreens() {
   }
   return result.screens
 }
+
+// Load lightweight immutable-version summaries for the library history panel.
+export async function listScreenVersions(agentId) {
+  const response = await fetch(
+    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/versions`,
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (!Array.isArray(result?.versions)) {
+    throw new Error('Backend returned an invalid version-history response.')
+  }
+  return result.versions
+}
+
+// Duplicate the latest working state into a new, unpublished draft.
+export async function duplicateScreen(agentId, name) {
+  const response = await fetch(
+    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/duplicate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (result?.status !== 'draft' || !result?.agent_id || !result?.revision) {
+    throw new Error('Backend returned an invalid duplicate-screen response.')
+  }
+  return result
+}
+
+// Copy an immutable version over the mutable working draft.
+export async function restoreScreenVersion(agentId, version) {
+  const response = await fetch(
+    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/versions/${version}/restore`,
+    { method: 'POST' },
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (result?.status !== 'draft' || !result?.revision) {
+    throw new Error('Backend returned an invalid restore-version response.')
+  }
+  return result
+}
+
+// Archive is a reversible metadata change; no draft or version is deleted.
+export async function setScreenArchived(agentId, archived) {
+  const response = await fetch(
+    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/archive`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (result?.agent_id !== agentId || typeof result?.is_archived !== 'boolean') {
+    throw new Error('Backend returned an invalid archive response.')
+  }
+  return result
+}

@@ -13,16 +13,21 @@ from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from db import (
+    duplicate_screen,
     ensure_indexes,
     get_draft,
     get_manifest,
     list_agents,
+    list_versions,
     publish_draft,
+    restore_version_as_draft,
     save_draft,
     save_manifest,
+    screen_exists,
+    set_screen_archived,
     slugify,
 )
 from llm import PROMPT_VERSION, generate_schema
@@ -146,6 +151,14 @@ class SaveDraftRequest(BaseModel):
 class PublishDraftRequest(BaseModel):
     draft_revision: str = Field(min_length=1, max_length=64)
     change_summary: str = Field(min_length=1, max_length=240)
+
+
+class DuplicateScreenRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class ArchiveScreenRequest(BaseModel):
+    archived: bool
 
 
 def _validated_agent_id(agent_id: str) -> str:
@@ -332,6 +345,111 @@ def list_screens() -> dict:
     except PyMongoError as exc:
         raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
     return {"screens": screens}
+
+
+@app.get("/screens/{agent_id}/versions")
+def get_screen_versions(agent_id: str) -> dict:
+    """Return published-version history without loading full manifests."""
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        exists = screen_exists(agent_id)
+        versions = list_versions(agent_id) if exists else []
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if not exists:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No screen found for agent_id '{agent_id}'.",
+        )
+    return {"agent_id": agent_id, "versions": versions}
+
+
+@app.post("/screens/{agent_id}/duplicate", status_code=201)
+def duplicate_saved_screen(
+    agent_id: str, request: DuplicateScreenRequest
+) -> dict:
+    """Create a new draft from the source's latest draft or published version."""
+    agent_id = _validated_agent_id(agent_id)
+    name = request.name.strip()
+    target_agent_id = slugify(name)
+    if not target_agent_id:
+        raise HTTPException(status_code=422, detail="name must contain letters or digits")
+    try:
+        if not screen_exists(agent_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No screen found for agent_id '{agent_id}'.",
+            )
+        if screen_exists(target_agent_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"A screen with agent_id '{target_agent_id}' already exists.",
+            )
+        draft = duplicate_screen(agent_id, target_agent_id, name)
+    except HTTPException:
+        raise
+    except DuplicateKeyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A screen with agent_id '{target_agent_id}' already exists.",
+        ) from exc
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+    if not draft:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No screen found for agent_id '{agent_id}'.",
+        )
+    return {
+        "agent_id": target_agent_id,
+        "status": "draft",
+        "revision": draft.get("revision"),
+        "duplicated_from": agent_id,
+    }
+
+
+@app.post("/screens/{agent_id}/versions/{version}/restore")
+def restore_screen_version(agent_id: str, version: int) -> dict:
+    """Restore an immutable version by copying it into the working draft."""
+    agent_id = _validated_agent_id(agent_id)
+    if version < 1:
+        raise HTTPException(status_code=422, detail="version must be at least 1")
+    try:
+        draft = restore_version_as_draft(agent_id, version)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} was not found for agent_id '{agent_id}'.",
+        )
+    return {
+        "agent_id": agent_id,
+        "status": "draft",
+        "revision": draft.get("revision"),
+        "restored_from_version": version,
+    }
+
+
+@app.patch("/screens/{agent_id}/archive")
+def archive_saved_screen(agent_id: str, request: ArchiveScreenRequest) -> dict:
+    """Soft-archive or unarchive a screen without deleting any versions."""
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        metadata = set_screen_archived(agent_id, request.archived)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if metadata is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No screen found for agent_id '{agent_id}'.",
+        )
+    return {
+        "agent_id": agent_id,
+        "is_archived": bool(metadata.get("is_archived")),
+        "archived_at": metadata.get("archived_at"),
+    }
 
 
 @app.get("/screens/{agent_id}")

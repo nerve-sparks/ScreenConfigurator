@@ -21,6 +21,8 @@ screen is rendered and saved.
 - Placement of custom fields into a selected wizard step.
 - Backend validation before preview and before storage.
 - One mutable working draft per screen plus immutable published versions in MongoDB.
+- Searchable screen library with draft/published filters, duplication,
+  version history, restore-to-draft, and reversible archiving.
 - Loading previously saved screens without calling the LLM again.
 - Responsive desktop, tablet, and mobile interface.
 - Route-separated builder, preview, published screen, and saved library.
@@ -91,7 +93,7 @@ ScreenConfigurator/
 │   │   ├── BuilderPage.jsx      # New/edit configuration routes
 │   │   ├── PreviewPage.jsx      # Isolated draft and saved previews
 │   │   ├── PublishedScreenPage.jsx # Clean user-facing input route
-│   │   ├── LibraryPage.jsx      # Saved screen configuration picker
+│   │   ├── LibraryPage.jsx      # Saved screen search and lifecycle management
 │   │   ├── ScreenExperience.jsx # Shared single/wizard rendering surface
 │   │   ├── StudioShell.jsx      # Shared Studio navigation and route states
 │   │   ├── routeDraft.js        # Session-backed handoff to draft preview
@@ -129,7 +131,8 @@ cd ScreenConfigurator
 The backend creates and uses:
 
 - Database: `agent_screens`
-- Collection: `manifests`
+- Collection: `manifests` for drafts and immutable published versions
+- Collection: `screen_metadata` for reversible archive state
 
 For a local MongoDB server, the default connection is:
 
@@ -282,7 +285,7 @@ Restart Vite after changing an environment variable.
 | `/preview/draft` | Test the current validated working draft. |
 | `/preview/{screenId}` | Test a saved screen without builder controls. |
 | `/screens/{screenId}` | Open the clean published input experience. |
-| `/library` | Browse saved configurations and choose edit, preview, or published routes. |
+| `/library` | Search, filter, duplicate, restore, archive, and open saved screens. |
 
 The legacy root URL redirects to `/builder/new`. The preview handoff is also
 kept in browser session storage so refreshing `/preview/draft` does not discard
@@ -324,6 +327,10 @@ before the screen can reach preview.
 | `POST` | `/screens/{agent_id}/publish` | Validate and publish the current draft revision. |
 | `POST` | `/screens` | Legacy direct-publish endpoint for older clients. |
 | `GET` | `/screens` | List draft-only and published screens. |
+| `GET` | `/screens/{agent_id}/versions` | List immutable published-version history. |
+| `POST` | `/screens/{agent_id}/duplicate` | Copy the latest working state into a new draft. |
+| `POST` | `/screens/{agent_id}/versions/{version}/restore` | Copy an older version over the working draft. |
+| `PATCH` | `/screens/{agent_id}/archive` | Archive or unarchive a screen without deleting it. |
 | `GET` | `/screens/{agent_id}` | Load the latest saved version. |
 | `GET` | `/screens/{agent_id}?version=2` | Load a specific saved version. |
 
@@ -354,6 +361,12 @@ MongoDB uses two persistence states:
 - Publishing the first validated draft receives version `1`.
 - Later explicit publishes create version `2`, `3`, and so on.
 - Existing published versions are never updated in place and remain loadable.
+- Restoring a version copies it into the mutable draft; it never rolls back or
+  alters published history.
+- Duplicating creates a new unpublished draft with a new agent ID and no copied
+  publication history.
+- Archiving only updates `screen_metadata`; draft and version documents remain
+  untouched and can be unarchived later.
 - A unique MongoDB index prevents duplicate `(agent_id, version)` pairs.
 - A draft-revision index makes retrying the same publish request idempotent.
 - Preview submissions, agent output/history, credentials, and LLM reasoning are

@@ -8,7 +8,12 @@ from pymongo.errors import DuplicateKeyError
 
 import db
 import main
-from main import PublishDraftRequest, SaveDraftRequest
+from main import (
+    ArchiveScreenRequest,
+    DuplicateScreenRequest,
+    PublishDraftRequest,
+    SaveDraftRequest,
+)
 
 
 def valid_manifest(title="Topic"):
@@ -67,6 +72,13 @@ class MemoryCollection:
         if not matches:
             return None
         return self._project(matches[0], projection)
+
+    def find(self, query, projection=None, sort=None):
+        matches = [item for item in self.documents if self._matches(item, query)]
+        if sort:
+            key, direction = sort[0]
+            matches.sort(key=lambda item: item.get(key, -1), reverse=direction < 0)
+        return [self._project(item, projection) for item in matches]
 
     def update_one(self, query, update, upsert=False):
         document = next(
@@ -227,3 +239,147 @@ def test_publish_rejects_a_stale_preview_revision(monkeypatch):
         )
 
     assert raised.value.status_code == 409
+
+
+def test_duplicate_creates_an_independent_unpublished_draft(monkeypatch):
+    collection = MemoryCollection()
+    monkeypatch.setattr(db, "_collection", collection)
+    save_working_draft(valid_manifest("Original"), valid_manifest("Original"))
+
+    duplicate = db.duplicate_screen(
+        "research-agent", "research-agent-copy", "Research Agent Copy"
+    )
+
+    assert duplicate["agent_id"] == "research-agent-copy"
+    assert duplicate["status"] == "draft"
+    assert duplicate["duplicated_from"] == "research-agent"
+    assert duplicate["name"] == "Research Agent Copy"
+    assert duplicate["presentation"]["display_name"] == "Research Agent Copy"
+    assert duplicate["draft_manifest"] == valid_manifest("Original")
+    assert db.get_manifest("research-agent-copy") is None
+
+    with pytest.raises(DuplicateKeyError):
+        db.duplicate_screen(
+            "research-agent", "research-agent-copy", "Research Agent Copy"
+        )
+
+
+def test_restore_copies_an_old_version_without_mutating_history(monkeypatch):
+    collection = MemoryCollection()
+    monkeypatch.setattr(db, "_collection", collection)
+    first_draft = save_working_draft(valid_manifest("First"), valid_manifest("First"))
+    db.publish_draft("research-agent", first_draft, valid_manifest("First"), "Initial")
+    second_draft = save_working_draft(valid_manifest("Second"), valid_manifest("Second"))
+    db.publish_draft("research-agent", second_draft, valid_manifest("Second"), "Edited")
+
+    restored = db.restore_version_as_draft("research-agent", 1)
+
+    assert restored["draft_manifest"] == valid_manifest("First")
+    assert restored["restored_from_version"] == 1
+    assert "approved_manifest" not in restored
+    assert db.get_manifest("research-agent", 1)["manifest"] == valid_manifest("First")
+    assert db.get_manifest("research-agent", 2)["manifest"] == valid_manifest("Second")
+
+
+def test_version_history_is_newest_first_and_omits_manifests(monkeypatch):
+    collection = MemoryCollection()
+    monkeypatch.setattr(db, "_collection", collection)
+    first_draft = save_working_draft(valid_manifest("First"), valid_manifest("First"))
+    db.publish_draft("research-agent", first_draft, valid_manifest("First"), "Initial")
+    second_draft = save_working_draft(valid_manifest("Second"), valid_manifest("Second"))
+    db.publish_draft("research-agent", second_draft, valid_manifest("Second"), "Edited")
+
+    history = db.list_versions("research-agent")
+
+    assert [item["version"] for item in history] == [2, 1]
+    assert [item["change_summary"] for item in history] == ["Edited", "Initial"]
+    assert all("manifest" not in item for item in history)
+
+
+def test_archive_metadata_is_reversible_and_preserves_screen_data(monkeypatch):
+    collection = MemoryCollection()
+    metadata = MemoryCollection()
+    monkeypatch.setattr(db, "_collection", collection)
+    monkeypatch.setattr(db, "_metadata_collection", metadata)
+    draft = save_working_draft(valid_manifest(), valid_manifest())
+    db.publish_draft("research-agent", draft, valid_manifest(), "Initial")
+    documents_before_archive = deepcopy(collection.documents)
+
+    archived = db.set_screen_archived("research-agent", True)
+    unarchived = db.set_screen_archived("research-agent", False)
+
+    assert archived["is_archived"] is True
+    assert archived["archived_at"]
+    assert unarchived["is_archived"] is False
+    assert "archived_at" not in unarchived
+    assert collection.documents == documents_before_archive
+    assert db.set_screen_archived("missing-agent", True) is None
+
+
+def test_library_management_routes_return_stable_response_contracts(monkeypatch):
+    monkeypatch.setattr(main, "screen_exists", lambda agent_id: agent_id == "research-agent")
+    monkeypatch.setattr(
+        main,
+        "list_versions",
+        lambda agent_id: [{"agent_id": agent_id, "version": 2}],
+    )
+    monkeypatch.setattr(
+        main,
+        "duplicate_screen",
+        lambda source_id, target_id, name: {
+            "agent_id": target_id,
+            "revision": "copy-revision",
+        },
+    )
+    monkeypatch.setattr(
+        main,
+        "restore_version_as_draft",
+        lambda agent_id, version: {"revision": f"restored-{version}"},
+    )
+    monkeypatch.setattr(
+        main,
+        "set_screen_archived",
+        lambda agent_id, archived: {
+            "agent_id": agent_id,
+            "is_archived": archived,
+            "archived_at": "2026-07-21T00:00:00Z" if archived else None,
+        },
+    )
+
+    assert main.get_screen_versions("research-agent")["versions"][0]["version"] == 2
+    assert main.duplicate_saved_screen(
+        "research-agent", DuplicateScreenRequest(name="Research Copy")
+    ) == {
+        "agent_id": "research-copy",
+        "status": "draft",
+        "revision": "copy-revision",
+        "duplicated_from": "research-agent",
+    }
+    assert main.restore_screen_version("research-agent", 2)["restored_from_version"] == 2
+    assert main.archive_saved_screen(
+        "research-agent", ArchiveScreenRequest(archived=True)
+    )["is_archived"] is True
+
+
+def test_library_management_routes_report_missing_resources(monkeypatch):
+    monkeypatch.setattr(main, "screen_exists", lambda agent_id: False)
+    monkeypatch.setattr(main, "restore_version_as_draft", lambda agent_id, version: None)
+    monkeypatch.setattr(main, "set_screen_archived", lambda agent_id, archived: None)
+
+    with pytest.raises(HTTPException) as versions_error:
+        main.get_screen_versions("missing-agent")
+    with pytest.raises(HTTPException) as duplicate_error:
+        main.duplicate_saved_screen(
+            "missing-agent", DuplicateScreenRequest(name="Missing Copy")
+        )
+    with pytest.raises(HTTPException) as restore_error:
+        main.restore_screen_version("missing-agent", 1)
+    with pytest.raises(HTTPException) as archive_error:
+        main.archive_saved_screen(
+            "missing-agent", ArchiveScreenRequest(archived=True)
+        )
+
+    assert versions_error.value.status_code == 404
+    assert duplicate_error.value.status_code == 404
+    assert restore_error.value.status_code == 404
+    assert archive_error.value.status_code == 404

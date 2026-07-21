@@ -14,6 +14,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from copy import deepcopy
 from typing import Optional
 from uuid import uuid4
 
@@ -27,7 +28,9 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 
 # The client connects lazily -- nothing touches the network at import time.
 _client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-_collection = _client["agent_screens"]["manifests"]
+_database = _client["agent_screens"]
+_collection = _database["manifests"]
+_metadata_collection = _database["screen_metadata"]
 
 _MAX_SAVE_ATTEMPTS = 3
 
@@ -61,6 +64,7 @@ def ensure_indexes() -> None:
             "draft_revision": {"$type": "string"},
         },
     )
+    _metadata_collection.create_index([("agent_id", ASCENDING)], unique=True)
 
 
 def slugify(text: str) -> str:
@@ -175,6 +179,13 @@ def get_draft(agent_id: str) -> Optional[dict]:
     )
 
 
+def screen_exists(agent_id: str) -> bool:
+    """Return whether the ID has a working draft or a published version."""
+    if get_draft(agent_id) is not None:
+        return True
+    return get_manifest(agent_id) is not None
+
+
 def publish_draft(
     agent_id: str,
     draft: dict,
@@ -264,6 +275,121 @@ def get_manifest(agent_id: str, version: Optional[int] = None) -> Optional[dict]
     )
 
 
+def list_versions(agent_id: str) -> list[dict]:
+    """Return immutable version summaries, newest first, without manifests."""
+    projection = {
+        "_id": False,
+        "agent_id": True,
+        "version": True,
+        "status": True,
+        "name": True,
+        "change_summary": True,
+        "published_at": True,
+        "created_at": True,
+    }
+    return list(
+        _collection.find(
+            _published_query(agent_id),
+            projection=projection,
+            sort=[("version", DESCENDING)],
+        )
+    )
+
+
+def duplicate_screen(source_agent_id: str, target_agent_id: str, name: str) -> dict:
+    """Copy the latest working state into a brand-new, unpublished draft."""
+    if screen_exists(target_agent_id):
+        raise DuplicateKeyError(f"Screen '{target_agent_id}' already exists.")
+
+    source_draft = get_draft(source_agent_id)
+    source_version = None if source_draft else get_manifest(source_agent_id)
+    source = source_draft or source_version
+    if source is None:
+        return {}
+
+    manifest = deepcopy(
+        source.get("draft_manifest") if source_draft else source.get("manifest")
+    )
+    presentation = deepcopy(source.get("presentation", {}))
+    presentation["display_name"] = name
+    now = _utc_now()
+    document = {
+        "agent_id": target_agent_id,
+        "screen_id": target_agent_id,
+        "name": name,
+        "description": source.get("description", ""),
+        "status": "draft",
+        "draft_manifest": manifest,
+        "source": source.get("source", "manual"),
+        "presentation": presentation,
+        "editor_state": deepcopy(source.get("editor_state", {})),
+        "generation": deepcopy(source.get("generation", {})),
+        "validation_errors": deepcopy(source.get("validation_errors", [])),
+        "revision": uuid4().hex,
+        "duplicated_from": source_agent_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+    _collection.insert_one(document)
+    return get_draft(target_agent_id) or {}
+
+
+def restore_version_as_draft(agent_id: str, version: int) -> Optional[dict]:
+    """Replace the mutable draft with a copy of an immutable version."""
+    published = get_manifest(agent_id, version)
+    if published is None:
+        return None
+
+    presentation = deepcopy(published.get("presentation", {}))
+    restored = save_draft(
+        agent_id=agent_id,
+        draft_manifest=deepcopy(published["manifest"]),
+        description=published.get("description", ""),
+        name=(
+            published.get("name")
+            or presentation.get("display_name")
+            or agent_id
+        ),
+        source=published.get("source", "manual"),
+        presentation=presentation,
+        editor_state={},
+        validation_errors=[],
+        approved_manifest=None,
+        generation=deepcopy(published.get("generation", {})),
+    )
+    _collection.update_one(
+        {"agent_id": agent_id, "status": "draft"},
+        {
+            "$set": {"restored_from_version": version},
+            "$unset": {"duplicated_from": ""},
+        },
+    )
+    return get_draft(agent_id) or restored
+
+
+def set_screen_archived(agent_id: str, archived: bool) -> Optional[dict]:
+    """Soft-archive or unarchive a screen without modifying its versions."""
+    if not screen_exists(agent_id):
+        return None
+    now = _utc_now()
+    update: dict = {
+        "$set": {
+            "agent_id": agent_id,
+            "is_archived": archived,
+            "updated_at": now,
+        },
+        "$setOnInsert": {"created_at": now},
+    }
+    if archived:
+        update["$set"]["archived_at"] = now
+    else:
+        update["$unset"] = {"archived_at": ""}
+    _metadata_collection.update_one({"agent_id": agent_id}, update, upsert=True)
+    return _metadata_collection.find_one(
+        {"agent_id": agent_id}, projection={"_id": False}
+    )
+
+
 def list_agents() -> list[dict]:
     """Return one library summary per agent, including draft-only screens."""
     published_pipeline = [
@@ -278,7 +404,9 @@ def list_agents() -> list[dict]:
             "$group": {
                 "_id": "$agent_id",
                 "latest_version": {"$first": "$version"},
+                "name": {"$first": "$name"},
                 "published_at": {"$first": "$published_at"},
+                "version_count": {"$sum": 1},
             }
         },
     ]
@@ -286,8 +414,11 @@ def list_agents() -> list[dict]:
         item["_id"]: {
             "agent_id": item["_id"],
             "latest_version": item.get("latest_version"),
+            "name": item.get("name") or "",
             "published_at": item.get("published_at"),
+            "version_count": item.get("version_count", 0),
             "has_draft": False,
+            "is_archived": False,
         }
         for item in _collection.aggregate(published_pipeline)
     }
@@ -312,7 +443,9 @@ def list_agents() -> list[dict]:
                 "agent_id": agent_id,
                 "latest_version": draft.get("published_version"),
                 "published_at": None,
+                "version_count": 0,
                 "has_draft": False,
+                "is_archived": False,
             },
         )
         summary.update(
@@ -323,5 +456,22 @@ def list_agents() -> list[dict]:
             draft_updated_at=draft.get("updated_at"),
             name=draft.get("name", ""),
         )
+
+    metadata = _metadata_collection.find(
+        {},
+        projection={
+            "_id": False,
+            "agent_id": True,
+            "is_archived": True,
+            "archived_at": True,
+        },
+    )
+    for item in metadata:
+        summary = summaries.get(item.get("agent_id"))
+        if summary is not None:
+            summary.update(
+                is_archived=bool(item.get("is_archived")),
+                archived_at=item.get("archived_at"),
+            )
 
     return [summaries[key] for key in sorted(summaries)]

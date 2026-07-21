@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  duplicateScreen,
+  listScreenVersions,
   listScreens,
   loadDraft,
   loadScreen,
   publishDraft,
+  restoreScreenVersion,
   saveDraft,
   saveScreen,
+  setScreenArchived,
   validateScreen,
 } from './api.js'
 
@@ -66,6 +70,92 @@ describe('listScreens', () => {
     )
 
     await expect(listScreens()).rejects.toThrow(/invalid screen-library response/i)
+  })
+})
+
+describe('screen library management', () => {
+  it('loads lightweight version history', async () => {
+    const versions = [{ version: 2 }, { version: 1 }]
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ agent_id: 'research-agent', versions }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listScreenVersions('research agent')).resolves.toEqual(versions)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/screens\/research%20agent\/versions$/),
+    )
+  })
+
+  it('duplicates a screen with a human-readable name', async () => {
+    const result = {
+      agent_id: 'research-copy',
+      status: 'draft',
+      revision: 'revision-copy',
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => result,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(duplicateScreen('research-agent', 'Research Copy')).resolves.toEqual(result)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/screens\/research-agent\/duplicate$/),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ name: 'Research Copy' }),
+      }),
+    )
+  })
+
+  it('restores a version through a copy-to-draft operation', async () => {
+    const result = {
+      agent_id: 'research-agent',
+      status: 'draft',
+      revision: 'restored-revision',
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => result,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(restoreScreenVersion('research-agent', 2)).resolves.toEqual(result)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/screens\/research-agent\/versions\/2\/restore$/),
+      { method: 'POST' },
+    )
+  })
+
+  it('updates reversible archive metadata', async () => {
+    const result = { agent_id: 'research-agent', is_archived: true }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => result,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(setScreenArchived('research-agent', true)).resolves.toEqual(result)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/screens\/research-agent\/archive$/),
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ archived: true }),
+      }),
+    )
+  })
+
+  it('rejects malformed management responses', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ versions: {} }) }),
+    )
+
+    await expect(listScreenVersions('research-agent')).rejects.toThrow(
+      /invalid version-history response/i,
+    )
   })
 })
 

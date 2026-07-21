@@ -4,23 +4,31 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.jsx'
 import {
+  duplicateScreen,
   generate,
+  listScreenVersions,
   listScreens,
   loadDraft,
   loadScreen,
   publishDraft,
+  restoreScreenVersion,
   saveDraft,
+  setScreenArchived,
   validateScreen,
 } from './api.js'
 import { savePreviewDraft } from './routeDraft.js'
 
 vi.mock('./api.js', () => ({
+  duplicateScreen: vi.fn(),
   generate: vi.fn(),
+  listScreenVersions: vi.fn(),
   validateScreen: vi.fn(),
   loadDraft: vi.fn(),
   loadScreen: vi.fn(),
   saveDraft: vi.fn(),
   publishDraft: vi.fn(),
+  restoreScreenVersion: vi.fn(),
+  setScreenArchived: vi.fn(),
   listScreens: vi.fn(),
 }))
 
@@ -73,6 +81,21 @@ beforeEach(() => {
   loadDraft.mockRejectedValue(notFound)
   loadScreen.mockResolvedValue(savedDocument)
   listScreens.mockResolvedValue([])
+  listScreenVersions.mockResolvedValue([])
+  duplicateScreen.mockResolvedValue({
+    agent_id: 'research-agent-copy',
+    status: 'draft',
+    revision: 'duplicate-revision-1',
+  })
+  restoreScreenVersion.mockResolvedValue({
+    agent_id: 'research-agent',
+    status: 'draft',
+    revision: 'restored-revision-1',
+  })
+  setScreenArchived.mockResolvedValue({
+    agent_id: 'research-agent',
+    is_archived: true,
+  })
   saveDraft.mockResolvedValue({
     agent_id: 'an-agent-that-researches-a-topic',
     status: 'draft',
@@ -340,14 +363,14 @@ describe('separated screen routes', () => {
     expect(screen.queryByText('Save this configuration')).not.toBeInTheDocument()
   })
 
-  it('lists saved configurations with separate edit, preview, and published links', async () => {
+  it('lists saved configurations with separate draft, preview, and published links', async () => {
     listScreens.mockResolvedValue([
       { agent_id: 'research-agent', latest_version: 2 },
     ])
     renderApp('/library')
 
     expect(await screen.findByRole('heading', { name: 'research-agent' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Preview published' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Preview latest' })).toHaveAttribute(
       'href',
       '/preview/research-agent',
     )
@@ -355,7 +378,7 @@ describe('separated screen routes', () => {
       'href',
       '/builder/research-agent/edit',
     )
-    expect(screen.getByRole('link', { name: /Open published/ })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /Published UI/ })).toHaveAttribute(
       'href',
       '/screens/research-agent',
     )
@@ -374,11 +397,150 @@ describe('separated screen routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Draft Agent' })).toBeInTheDocument()
     expect(screen.getByText('Draft')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Continue editing' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open latest draft' })).toHaveAttribute(
       'href',
       '/builder/draft-agent/edit',
     )
-    expect(screen.queryByRole('link', { name: /Open published/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Published UI/ })).not.toBeInTheDocument()
+  })
+
+  it('searches by name or agent ID and filters by lifecycle status', async () => {
+    const user = userEvent.setup()
+    listScreens.mockResolvedValue([
+      {
+        agent_id: 'research-agent',
+        name: 'Research Agent',
+        latest_version: 1,
+        has_draft: true,
+        is_archived: false,
+      },
+      {
+        agent_id: 'billing-helper',
+        name: 'Invoice Assistant',
+        latest_version: 2,
+        has_draft: false,
+        is_archived: false,
+      },
+      {
+        agent_id: 'old-support-agent',
+        name: 'Archived Support',
+        latest_version: 3,
+        has_draft: true,
+        is_archived: true,
+      },
+    ])
+    renderApp('/library')
+
+    await screen.findByRole('heading', { name: 'Research Agent' })
+    expect(screen.queryByRole('heading', { name: 'Archived Support' })).not.toBeInTheDocument()
+
+    const searchInput = screen.getByRole('searchbox', { name: 'Search screens' })
+    await user.type(searchInput, 'billing-helper')
+    expect(screen.getByRole('heading', { name: 'Invoice Assistant' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Research Agent' })).not.toBeInTheDocument()
+
+    await user.clear(searchInput)
+    await user.click(screen.getByRole('button', { name: /^Drafts 1$/ }))
+    expect(screen.getByRole('heading', { name: 'Research Agent' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Invoice Assistant' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /^Published 2$/ }))
+    expect(screen.getByRole('heading', { name: 'Invoice Assistant' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /^Archived 1$/ }))
+    expect(screen.getByRole('heading', { name: 'Archived Support' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Research Agent' })).not.toBeInTheDocument()
+  })
+
+  it('opens immutable version history and restores a selected version as the draft', async () => {
+    const user = userEvent.setup()
+    listScreens.mockResolvedValue([
+      {
+        agent_id: 'research-agent',
+        name: 'Research Agent',
+        latest_version: 2,
+        version_count: 2,
+        has_draft: true,
+        is_archived: false,
+      },
+    ])
+    listScreenVersions.mockResolvedValue([
+      { version: 2, change_summary: 'Added sources', published_at: '2026-07-20T10:00:00Z' },
+      { version: 1, change_summary: 'Initial inputs', published_at: '2026-07-19T10:00:00Z' },
+    ])
+    renderApp('/library')
+
+    await user.click(await screen.findByRole('button', { name: 'Version history (2)' }))
+    expect(listScreenVersions).toHaveBeenCalledWith('research-agent')
+    const firstVersion = (await screen.findByText('Initial inputs')).closest('li')
+    await user.click(within(firstVersion).getByRole('button', { name: 'Restore' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Restore version 1?')
+    await user.click(screen.getByRole('button', { name: 'Restore as draft' }))
+
+    await waitFor(() => {
+      expect(restoreScreenVersion).toHaveBeenCalledWith('research-agent', 1)
+    })
+  })
+
+  it('duplicates a screen into a separately named draft', async () => {
+    const user = userEvent.setup()
+    listScreens.mockResolvedValue([
+      {
+        agent_id: 'research-agent',
+        name: 'Research Agent',
+        latest_version: 2,
+        version_count: 2,
+        has_draft: true,
+        is_archived: false,
+      },
+    ])
+    duplicateScreen.mockResolvedValue({
+      agent_id: 'customer-research-agent',
+      status: 'draft',
+      revision: 'duplicate-revision-1',
+    })
+    renderApp('/library')
+
+    await user.click(await screen.findByRole('button', { name: 'Duplicate Research Agent' }))
+    const nameInput = screen.getByLabelText('New screen name')
+    await user.clear(nameInput)
+    await user.type(nameInput, 'Customer Research Agent')
+    expect(screen.getByText(/customer-research-agent/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Create duplicate' }))
+
+    await waitFor(() => {
+      expect(duplicateScreen).toHaveBeenCalledWith(
+        'research-agent',
+        'Customer Research Agent',
+      )
+    })
+  })
+
+  it('archives a screen without deleting it from the library', async () => {
+    const user = userEvent.setup()
+    const activeScreen = {
+      agent_id: 'research-agent',
+      name: 'Research Agent',
+      latest_version: 2,
+      version_count: 2,
+      has_draft: true,
+      is_archived: false,
+    }
+    listScreens
+      .mockResolvedValueOnce([activeScreen])
+      .mockResolvedValueOnce([{ ...activeScreen, is_archived: true }])
+    renderApp('/library')
+
+    await user.click(await screen.findByRole('button', { name: 'Archive Research Agent' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(/every published version remain intact/i)
+    await user.click(screen.getByRole('button', { name: 'Archive screen' }))
+
+    await waitFor(() => {
+      expect(setScreenArchived).toHaveBeenCalledWith('research-agent', true)
+    })
+    await user.click(screen.getByRole('button', { name: /^Archived 1$/ }))
+    const archivedCard = screen.getByRole('heading', { name: 'Research Agent' }).closest('article')
+    expect(within(archivedCard).getByText('Archived')).toBeInTheDocument()
   })
 
   it('publishes a validated draft and exposes its published route', async () => {
