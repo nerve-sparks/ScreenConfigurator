@@ -12,16 +12,22 @@ No UI, no web route -- just the core transformation (Step 2).
 
 import json
 import logging
+import math
 import os
 import re
 import sys
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Iterator
 
 import json_repair
 from dotenv import load_dotenv
-from litellm import Router, completion
+from litellm import Router, Timeout as LiteLLMTimeout, completion
+from litellm import supports_response_schema
+
+from meta_schema import MAX_INPUT_FIELDS, META_SCHEMA
+from validation import validate_manifest
 
 try:
     from langfuse import get_client as get_langfuse_client
@@ -35,11 +41,32 @@ logger = logging.getLogger(__name__)
 
 _GATEWAY_ALIAS = "gemini"
 _MAX_TOKENS = 8000
+_DEFAULT_TIMEOUT_SECONDS = 45.0
+_MIN_TIMEOUT_SECONDS = 1.0
+_MAX_TIMEOUT_SECONDS = 120.0
+_MAX_GENERATION_ATTEMPTS = 2
+_MAX_RETRY_OUTPUT_CHARS = 12_000
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "2"
 
 _router: Router | None = None
+
+
+class LLMConfigurationError(RuntimeError):
+    """The application cannot call its configured LLM route."""
+
+
+class LLMProviderError(RuntimeError):
+    """The provider request failed without exposing provider internals."""
+
+
+class LLMTimeoutError(LLMProviderError):
+    """The provider did not finish within the configured deadline."""
+
+
+class LLMOutputError(ValueError):
+    """The provider returned an invalid manifest twice."""
 
 SYSTEM_PROMPT = """\
 You convert a plain-text description of an AI agent into the specification
@@ -60,8 +87,19 @@ Rules:
   ONLY the inputs to collect from the user -- never the agent's outputs,
   results, or internal logic.
 - Every property must have a "type" and a short human-friendly "title".
-  Add "format" where it applies (e.g. "email", "uri", "date").
+  Use only the field types "string", "number", "integer", and "boolean".
+  Add only a supported string format when it applies: "email", "uri", "date",
+  "date-time", "time", or "data-url".
   Use the string format "data-url" when the user must upload a file.
+- Generate no more than {max_fields} input fields. Prefer the smallest set the
+  agent genuinely needs.
+- Field definitions may use only: type, title, description, format, enum,
+  minLength, maxLength, minimum, maximum, multipleOf, and contentMediaType.
+- Never emit $ref, $dynamicRef, $recursiveRef, remote schemas, custom widgets,
+  uiSchema, HTML, scripts, event handlers, or javascript: URLs.
+- Return only "input_schema" and "ui_hints" at the top level. Never invent
+  agent IDs, screen IDs, database IDs, owners, roles, permissions, or access
+  controls; the application owns all identity and authorization decisions.
 - List a field in "required" only if the agent cannot work without it.
 - "ui_hints.field_order" must contain every key of "properties" exactly
   once, in a sensible display order.
@@ -77,7 +115,7 @@ Rules:
   the groups' "fields" arrays must exactly equal "ui_hints.field_order".
 - In single mode, omit "groups".
 - Return strict JSON only: no prose, no explanations, no markdown fences.
-"""
+""".replace("{max_fields}", str(MAX_INPUT_FIELDS))
 
 
 def _strip_code_fences(text: str) -> str:
@@ -96,7 +134,7 @@ def _gateway_enabled() -> bool:
         return True
     if value in _FALSE_VALUES:
         return False
-    raise RuntimeError(
+    raise LLMConfigurationError(
         "LITE_LLM_ENABLE must be one of: true, false, 1, 0, yes, no, on, off."
     )
 
@@ -104,7 +142,7 @@ def _gateway_enabled() -> bool:
 def _required_gateway_setting(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise RuntimeError(
+        raise LLMConfigurationError(
             f"{name} is required when LITE_LLM_ENABLE is enabled. "
             "Add it to backend/.env."
         )
@@ -143,26 +181,50 @@ def _direct_model() -> str:
     """Return and validate the existing direct LiteLLM provider configuration."""
     model = os.getenv("MODEL", "").strip()
     if not model:
-        raise RuntimeError(
+        raise LLMConfigurationError(
             "MODEL is not set. Add it to backend/.env, "
             "e.g. MODEL=vertex_ai/gemini-3.5-flash"
         )
     if model.startswith("gemini/") and not os.getenv("GEMINI_API_KEY"):
-        raise RuntimeError("GEMINI_API_KEY is not set. Add it to backend/.env.")
+        raise LLMConfigurationError(
+            "GEMINI_API_KEY is not set. Add it to backend/.env."
+        )
     if model.startswith("vertex_ai/"):
         if not (os.getenv("VERTEXAI_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT")):
-            raise RuntimeError(
+            raise LLMConfigurationError(
                 "VERTEXAI_PROJECT is not set. Add your Google Cloud project ID "
                 "to backend/.env."
             )
         if not (
             os.getenv("VERTEXAI_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION")
         ):
-            raise RuntimeError(
+            raise LLMConfigurationError(
                 "VERTEXAI_LOCATION is not set. Add it to backend/.env, "
                 "e.g. VERTEXAI_LOCATION=global."
             )
     return model
+
+
+def _generation_timeout() -> float:
+    """Return a bounded provider timeout configured in seconds."""
+    raw = os.getenv(
+        "LLM_GENERATION_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)
+    ).strip()
+    try:
+        timeout = float(raw)
+    except ValueError as exc:
+        raise LLMConfigurationError(
+            "LLM_GENERATION_TIMEOUT_SECONDS must be a number between "
+            f"{_MIN_TIMEOUT_SECONDS:g} and {_MAX_TIMEOUT_SECONDS:g}."
+        ) from exc
+    if not math.isfinite(timeout) or not (
+        _MIN_TIMEOUT_SECONDS <= timeout <= _MAX_TIMEOUT_SECONDS
+    ):
+        raise LLMConfigurationError(
+            "LLM_GENERATION_TIMEOUT_SECONDS must be a number between "
+            f"{_MIN_TIMEOUT_SECONDS:g} and {_MAX_TIMEOUT_SECONDS:g}."
+        )
+    return timeout
 
 
 def _langfuse_configured() -> bool:
@@ -175,14 +237,14 @@ def _langfuse_configured() -> bool:
 
 @contextmanager
 def _generation_observation(
-    *, name: str, model: str, user_prompt: str
+    *, name: str, model: str, user_prompt: str, attempt: int
 ) -> Iterator[object | None]:
     """Create a generation-level Langfuse observation when configured."""
     if not _langfuse_configured():
         yield None
         return
     if get_langfuse_client is None:
-        raise RuntimeError(
+        raise LLMConfigurationError(
             "Langfuse credentials are configured but the langfuse package is not "
             "installed. Install backend/requirements.txt."
         )
@@ -193,6 +255,10 @@ def _generation_observation(
         as_type="generation",
         model=real_model,
         input=user_prompt,
+        metadata={
+            "prompt_version": PROMPT_VERSION,
+            "attempt": attempt,
+        },
     ) as generation:
         yield generation
 
@@ -222,37 +288,82 @@ def _loads_llm_json(raw: str):
         try:
             repaired = json_repair.loads(cleaned)
         except Exception as repair_error:
-            raise ValueError(
-                f"LLM response is not valid JSON ({strict_error}).\n"
-                f"--- raw response ---\n{raw}"
-            ) from repair_error
+            raise ValueError("LLM response is not valid JSON.") from repair_error
         if not isinstance(repaired, (dict, list)):
-            raise ValueError(
-                f"LLM response is not valid JSON ({strict_error}).\n"
-                f"--- raw response ---\n{raw}"
-            ) from strict_error
+            raise ValueError("LLM response is not valid JSON.") from strict_error
         logger.warning("Repaired malformed JSON returned by the LLM: %s", strict_error)
         return repaired
 
 
-def _completion_response(description: str):
-    messages = [
+def _response_format_for_model(model: str) -> dict:
+    """Use schema-constrained output only when LiteLLM declares support."""
+    try:
+        schema_supported = supports_response_schema(model=model)
+    except Exception:  # Defensive: capability detection must not block fallback.
+        schema_supported = False
+        logger.warning(
+            "Could not detect response-schema support for model %s; using JSON mode.",
+            model,
+        )
+    if not schema_supported:
+        return {"type": "json_object"}
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "agent_screen_manifest",
+            "strict": True,
+            "schema": deepcopy(META_SCHEMA),
+        },
+    }
+
+
+def _initial_messages(description: str) -> list[dict[str, str]]:
+    return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": description},
     ]
+
+
+def _retry_messages(
+    messages: list[dict[str, str]], raw: str, errors: list[str]
+) -> list[dict[str, str]]:
+    """Ask for one corrected object, grounded in backend validation errors."""
+    previous_output = raw[:_MAX_RETRY_OUTPUT_CHARS]
+    validation_feedback = json.dumps(errors[:20], ensure_ascii=True)
+    return [
+        *messages,
+        {"role": "assistant", "content": previous_output},
+        {
+            "role": "user",
+            "content": (
+                "Your previous response failed the application's manifest "
+                f"validation: {validation_feedback}. Return one corrected JSON "
+                "object only. Follow the original contract and do not add any "
+                "identifiers, permissions, widgets, HTML, or scripts."
+            ),
+        },
+    ]
+
+
+def _completion_response(
+    description: str, messages: list[dict[str, str]], attempt: int
+):
+    gateway_enabled = _gateway_enabled()
+    model = _gateway_model() if gateway_enabled else _direct_model()
     common = {
         "messages": messages,
-        "response_format": {"type": "json_object"},
+        "response_format": _response_format_for_model(model),
         "temperature": 0.1,
         "max_tokens": _MAX_TOKENS,
+        "timeout": _generation_timeout(),
     }
 
-    if _gateway_enabled():
-        model = _gateway_model()
+    if gateway_enabled:
         with _generation_observation(
             name="litellm-gateway-manifest",
             model=model,
             user_prompt=description,
+            attempt=attempt,
         ) as generation:
             response = _get_router().completion(model=_GATEWAY_ALIAS, **common)
             raw = response.choices[0].message.content or "{}"
@@ -264,6 +375,7 @@ def _completion_response(description: str):
             name="litellm-direct-manifest",
             model=model,
             user_prompt=description,
+            attempt=attempt,
         ) as generation:
             response = completion(model=model, **common)
             raw = response.choices[0].message.content or "{}"
@@ -289,28 +401,56 @@ def _completion_response(description: str):
 
 
 def generate_schema(description: str) -> dict:
-    """Turn a plain-text agent description into a manifest dict.
+    """Generate and validate a manifest, correcting invalid output once.
 
     Raises:
-        RuntimeError: if required configuration is missing.
-        ValueError: if the LLM response cannot be parsed as a JSON object.
+        LLMConfigurationError: if required configuration is missing.
+        LLMTimeoutError: if the provider exceeds the configured timeout.
+        LLMProviderError: if the provider request fails.
+        LLMOutputError: if both model responses violate the manifest contract.
     """
-    try:
-        raw = _completion_response(description)
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        route = "gateway" if _gateway_enabled() else "direct provider"
-        raise RuntimeError(f"LiteLLM {route} call failed: {exc}") from exc
+    messages = _initial_messages(description)
+    errors: list[str] = []
 
-    manifest = _loads_llm_json(raw)
+    for attempt in range(1, _MAX_GENERATION_ATTEMPTS + 1):
+        try:
+            raw = _completion_response(description, messages, attempt)
+            # print(raw)
+        except LLMConfigurationError:
+            raise
+        except (LiteLLMTimeout, TimeoutError) as exc:
+            logger.warning("LiteLLM generation timed out on attempt %s.", attempt)
+            raise LLMTimeoutError("LLM generation timed out.") from exc
+        except Exception as exc:
+            logger.error(
+                "LiteLLM provider request failed on attempt %s (%s).",
+                attempt,
+                type(exc).__name__,
+            )
+            raise LLMProviderError("LLM provider request failed.") from exc
 
-    if not isinstance(manifest, dict):
-        raise ValueError(
-            f"LLM returned a JSON {type(manifest).__name__}, expected an object.\n"
-            f"--- raw response ---\n{raw}"
-        )
-    return manifest
+        try:
+            parsed = _loads_llm_json(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    f"LLM returned a JSON {type(parsed).__name__}, expected an object."
+                )
+            valid, errors = validate_manifest(parsed)
+        except ValueError as exc:
+            valid = False
+            errors = [str(exc)]
+
+        if valid:
+            return parsed
+        if attempt < _MAX_GENERATION_ATTEMPTS:
+            logger.info("Retrying invalid LLM output once with validation feedback.")
+            messages = _retry_messages(messages, raw, errors)
+            continue
+
+    summary = "; ".join(errors[:5]) or "manifest validation failed"
+    raise LLMOutputError(
+        "LLM returned an invalid manifest after one correction attempt: " + summary
+    )
 
 
 if __name__ == "__main__":

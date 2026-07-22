@@ -25,11 +25,21 @@ execution behavior.
 
 Single-screen manifests omit `ui_hints.groups`.
 
-Field definitions can include normal JSON Schema descriptions, enums, and
-formats. The `data-url` string format represents a file input and is rendered
-as a file drop area. Agent name, icon, color, and welcome copy are presentation
-settings stored beside the manifest; they are not part of this validated
-input contract.
+The renderer accepts at most 30 fields. Field types are limited to `string`,
+`number`, `integer`, and `boolean`; supported string formats are `email`,
+`uri`, `date`, `date-time`, `time`, and `data-url`. Definitions may include
+`title`, `description`, `enum`, the applicable string/numeric limits, and
+`contentMediaType` for a `data-url` file input. Every other field keyword is
+rejected.
+
+References (`$ref` and related forms), custom widgets, HTML, scripts, and
+script-like directives are rejected before structural validation. The LLM is
+also forbidden from supplying agent/screen/database identifiers, owners,
+roles, or permissions. Those values are controlled by application code and
+are never interpreted from a manifest.
+
+Agent name, icon, color, and welcome copy are presentation settings stored
+beside the manifest; they are not part of this validated input contract.
 
 ## Wizard
 

@@ -1,18 +1,90 @@
-"""Structural + semantic validation: the gate every manifest must pass.
+"""Structural, semantic, and safety validation for every manifest.
 
 Nothing is stored or rendered unless validate_manifest says it is OK.
 Generic by design -- this module knows the manifest contract, never any
 specific agent.
 """
 
+import re
+
 from jsonschema import Draft202012Validator
 
-from meta_schema import META_SCHEMA
+from meta_schema import MAX_INPUT_FIELDS, META_SCHEMA
 
 # Fail loudly at import time if the meta-schema itself is ever broken.
 Draft202012Validator.check_schema(META_SCHEMA)
 
 _VALIDATOR = Draft202012Validator(META_SCHEMA)
+
+_REFERENCE_KEYS = {"$ref", "$dynamicRef", "$recursiveRef"}
+_UNSUPPORTED_WIDGET_KEYS = {
+    "ui:widget",
+    "widget",
+    "widgets",
+    "ui_schema",
+    "uischema",
+}
+_APPLICATION_OWNED_KEYS = {
+    "agent_id",
+    "screen_id",
+    "database_id",
+    "owner_id",
+    "permissions",
+    "roles",
+    "access_control",
+}
+_RESERVED_FIELD_NAMES = {"__proto__", "constructor", "prototype"}
+_HTML_TAG = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
+_SCRIPT_DIRECTIVE = re.compile(r"(?:javascript\s*:|\bon[a-z]+\s*=)", re.IGNORECASE)
+
+
+def _value_matches_type(value, field_type: str) -> bool:
+    """Match JSON scalar types without treating booleans as integers."""
+    if field_type == "string":
+        return isinstance(value, str)
+    if field_type == "boolean":
+        return isinstance(value, bool)
+    if field_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _safety_errors(value, path: str = "$") -> list[str]:
+    """Reject executable or externally resolved content before rendering.
+
+    JSON Schema references and custom widgets make the renderer interpret
+    provider-controlled behavior instead of plain data. HTML and script-like
+    strings are also rejected even though React normally escapes text; this
+    keeps the stored contract safe for future renderers and exports.
+    """
+    errors: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            key_text = str(key)
+            nested_path = f"{path}.{key_text}"
+            if key_text in _REFERENCE_KEYS:
+                errors.append(
+                    f"safety: {nested_path}: schema references are not supported"
+                )
+            if key_text.lower() in _UNSUPPORTED_WIDGET_KEYS:
+                errors.append(
+                    f"safety: {nested_path}: custom widgets are not supported"
+                )
+            if path == "$" and key_text.lower() in _APPLICATION_OWNED_KEYS:
+                errors.append(
+                    f"safety: {nested_path}: identifiers and permissions are "
+                    "application-controlled"
+                )
+            errors.extend(_safety_errors(nested, nested_path))
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            errors.extend(_safety_errors(nested, f"{path}[{index}]"))
+    elif isinstance(value, str):
+        if _HTML_TAG.search(value):
+            errors.append(f"safety: {path}: HTML markup is not allowed")
+        if _SCRIPT_DIRECTIVE.search(value):
+            errors.append(f"safety: {path}: script directives are not allowed")
+    return errors
 
 
 def _structural_errors(manifest) -> list[str]:
@@ -40,6 +112,65 @@ def _semantic_errors(manifest: dict) -> list[str]:
     ui_hints = manifest["ui_hints"]
     field_order = ui_hints["field_order"]
     mode = ui_hints["mode"]
+
+    if len(properties) > MAX_INPUT_FIELDS:
+        errors.append(
+            f"semantic: input_schema.properties supports at most "
+            f"{MAX_INPUT_FIELDS} fields"
+        )
+
+    for name, definition in properties.items():
+        field_type = definition["type"]
+        field_format = definition.get("format")
+        if name in _RESERVED_FIELD_NAMES:
+            errors.append(
+                f"semantic: input field name '{name}' is reserved and cannot be used"
+            )
+        if field_format is not None and field_type != "string":
+            errors.append(
+                f"semantic: input field '{name}' uses format '{field_format}' "
+                "but is not a string"
+            )
+        if "contentMediaType" in definition and field_format != "data-url":
+            errors.append(
+                f"semantic: input field '{name}' may use contentMediaType only "
+                "with the data-url format"
+            )
+        if any(key in definition for key in ("minLength", "maxLength")):
+            if field_type != "string":
+                errors.append(
+                    f"semantic: input field '{name}' uses string length limits "
+                    "but is not a string"
+                )
+            elif definition.get("minLength", 0) > definition.get(
+                "maxLength", 10_000
+            ):
+                errors.append(
+                    f"semantic: input field '{name}' has minLength greater "
+                    "than maxLength"
+                )
+        if any(key in definition for key in ("minimum", "maximum", "multipleOf")):
+            if field_type not in {"number", "integer"}:
+                errors.append(
+                    f"semantic: input field '{name}' uses numeric limits but "
+                    "is not numeric"
+                )
+            elif definition.get("minimum", float("-inf")) > definition.get(
+                "maximum", float("inf")
+            ):
+                errors.append(
+                    f"semantic: input field '{name}' has minimum greater than maximum"
+                )
+
+        enum_values = definition.get("enum")
+        if enum_values:
+            if not all(
+                _value_matches_type(item, field_type) for item in enum_values
+            ):
+                errors.append(
+                    f"semantic: input field '{name}' has enum values that do not "
+                    f"match type '{field_type}'"
+                )
 
     seen = set()
     for name in field_order:
@@ -164,6 +295,10 @@ def validate_manifest(manifest) -> tuple[bool, list[str]]:
     Structural errors are returned on their own: if the shape is wrong,
     the semantic layer cannot safely (or meaningfully) run.
     """
+    errors = _safety_errors(manifest)
+    if errors:
+        return False, errors
+
     errors = _structural_errors(manifest)
     if errors:
         return False, errors

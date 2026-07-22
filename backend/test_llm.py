@@ -1,6 +1,7 @@
 """Unit tests for provider-independent LLM response handling and prompting."""
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,7 @@ def clear_gateway(monkeypatch):
     monkeypatch.delenv("LITE_LLM_MODEL_GEMINI", raising=False)
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LLM_GENERATION_TIMEOUT_SECONDS", raising=False)
 
 
 def configure_vertex(monkeypatch):
@@ -50,6 +52,7 @@ def configure_vertex(monkeypatch):
     monkeypatch.setenv("MODEL", "vertex_ai/gemini-test")
     monkeypatch.setenv("VERTEXAI_PROJECT", "test-project")
     monkeypatch.setenv("VERTEXAI_LOCATION", "global")
+    monkeypatch.setattr(llm, "supports_response_schema", lambda **_: False)
 
 
 def configure_gateway(monkeypatch):
@@ -58,6 +61,7 @@ def configure_gateway(monkeypatch):
     monkeypatch.setenv("LITE_LLM_BASE_URL", "https://gateway.example.test")
     monkeypatch.setenv("LITE_LLM_KEY", "test-gateway-key")
     monkeypatch.setenv("LITE_LLM_MODEL_GEMINI", "gemini-test")
+    monkeypatch.setattr(llm, "supports_response_schema", lambda **_: False)
 
 
 def test_prompt_defines_single_and_wizard_contracts():
@@ -66,6 +70,10 @@ def test_prompt_defines_single_and_wizard_contracts():
     assert "exactly one group" in llm.SYSTEM_PROMPT
     assert "exactly equal" in llm.SYSTEM_PROMPT
     assert 'format "data-url"' in llm.SYSTEM_PROMPT
+    assert "no more than 30 input fields" in llm.SYSTEM_PROMPT
+    assert "Never emit $ref" in llm.SYSTEM_PROMPT
+    assert "Never invent" in llm.SYSTEM_PROMPT
+    assert "permissions" in llm.SYSTEM_PROMPT
 
 
 def test_generate_schema_uses_layout_prompt_and_parses_json(monkeypatch):
@@ -92,6 +100,58 @@ def test_generate_schema_uses_layout_prompt_and_parses_json(monkeypatch):
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["temperature"] == 0.1
     assert captured["max_tokens"] == 8000
+    assert captured["timeout"] == 45.0
+
+
+def test_generate_schema_uses_json_schema_when_model_supports_it(monkeypatch):
+    configure_vertex(monkeypatch)
+    monkeypatch.setattr(llm, "supports_response_schema", lambda **_: True)
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return completion_response(json.dumps(SINGLE_MANIFEST))
+
+    monkeypatch.setattr(llm, "completion", fake_completion)
+
+    assert llm.generate_schema("a structured research agent") == SINGLE_MANIFEST
+    assert captured["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "agent_screen_manifest",
+            "strict": True,
+            "schema": llm.META_SCHEMA,
+        },
+    }
+
+
+def test_generate_schema_uses_configured_timeout(monkeypatch):
+    configure_vertex(monkeypatch)
+    monkeypatch.setenv("LLM_GENERATION_TIMEOUT_SECONDS", "12.5")
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return completion_response(json.dumps(SINGLE_MANIFEST))
+
+    monkeypatch.setattr(llm, "completion", fake_completion)
+
+    llm.generate_schema("a time-bounded agent")
+    assert captured["timeout"] == 12.5
+
+
+@pytest.mark.parametrize("value", ["zero", "0", "121", "nan", "inf"])
+def test_invalid_generation_timeout_is_rejected(monkeypatch, value):
+    configure_vertex(monkeypatch)
+    monkeypatch.setenv("LLM_GENERATION_TIMEOUT_SECONDS", value)
+    monkeypatch.setattr(
+        llm,
+        "completion",
+        lambda **_: pytest.fail("provider must not be called"),
+    )
+
+    with pytest.raises(llm.LLMConfigurationError, match="between 1 and 120"):
+        llm.generate_schema("test agent")
 
 
 def test_generate_schema_routes_through_gateway_when_enabled(monkeypatch):
@@ -208,6 +268,7 @@ def test_gateway_completion_is_traced_when_langfuse_is_configured(monkeypatch):
         "as_type": "generation",
         "model": "gemini-test",
         "input": "a traced agent",
+        "metadata": {"prompt_version": "2", "attempt": 1},
     }
     assert captured["update"]["output"] == json.dumps(SINGLE_MANIFEST)
     assert captured["update"]["usage_details"] == {"input": 100, "output": 50}
@@ -249,6 +310,94 @@ def test_generate_schema_rejects_json_array(monkeypatch):
         llm.generate_schema("test agent")
 
 
+def test_generate_schema_retries_invalid_manifest_once(monkeypatch):
+    configure_vertex(monkeypatch)
+    invalid = {
+        **SINGLE_MANIFEST,
+        "ui_hints": {"mode": "single", "field_order": ["missing"]},
+    }
+    responses = iter([invalid, SINGLE_MANIFEST])
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return completion_response(json.dumps(next(responses)))
+
+    monkeypatch.setattr(llm, "completion", fake_completion)
+
+    assert llm.generate_schema("test agent") == SINGLE_MANIFEST
+    assert len(calls) == 2
+    assert len(calls[1]["messages"]) == 4
+    assert "failed the application's manifest validation" in calls[1]["messages"][-1][
+        "content"
+    ]
+    assert "missing" in calls[1]["messages"][-1]["content"]
+
+
+def test_generate_schema_retries_malformed_json_once(monkeypatch):
+    configure_vertex(monkeypatch)
+    responses = iter(["not json", json.dumps(SINGLE_MANIFEST)])
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return completion_response(next(responses))
+
+    monkeypatch.setattr(llm, "completion", fake_completion)
+
+    assert llm.generate_schema("test agent") == SINGLE_MANIFEST
+    assert len(calls) == 2
+    assert "not valid JSON" in calls[1]["messages"][-1]["content"]
+
+
+def test_generate_schema_stops_after_one_correction_attempt(monkeypatch):
+    configure_vertex(monkeypatch)
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return completion_response("[]")
+
+    monkeypatch.setattr(llm, "completion", fake_completion)
+
+    with pytest.raises(llm.LLMOutputError, match="one correction attempt"):
+        llm.generate_schema("test agent")
+    assert len(calls) == 2
+
+
+def test_generate_schema_does_not_retry_provider_failure_or_expose_secret(
+    monkeypatch,
+):
+    configure_vertex(monkeypatch)
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        raise ConnectionError("provider failed with api_key=super-secret")
+
+    monkeypatch.setattr(llm, "completion", fake_completion)
+
+    with pytest.raises(llm.LLMProviderError) as raised:
+        llm.generate_schema("test agent")
+    assert "super-secret" not in str(raised.value)
+    assert len(calls) == 1
+
+
+def test_generate_schema_reports_timeout_without_retry(monkeypatch):
+    configure_vertex(monkeypatch)
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("provider timeout details")
+
+    monkeypatch.setattr(llm, "completion", fake_completion)
+
+    with pytest.raises(llm.LLMTimeoutError, match="timed out"):
+        llm.generate_schema("test agent")
+    assert len(calls) == 1
+
+
 def test_direct_gemini_route_requires_api_key(monkeypatch):
     clear_gateway(monkeypatch)
     monkeypatch.setenv("MODEL", "gemini/gemini-test")
@@ -256,3 +405,23 @@ def test_direct_gemini_route_requires_api_key(monkeypatch):
 
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         llm.generate_schema("test agent")
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_VERTEX_AI_SMOKE_TEST", "").strip().lower() not in llm._TRUE_VALUES,
+    reason="Set RUN_VERTEX_AI_SMOKE_TEST=true to call the real Vertex AI model.",
+)
+def test_optional_real_vertex_ai_smoke(monkeypatch):
+    """Opt-in local integration test; normal CI always uses provider mocks."""
+    clear_gateway(monkeypatch)
+    monkeypatch.setenv("LITE_LLM_ENABLE", "false")
+    monkeypatch.setenv(
+        "MODEL",
+        os.getenv("VERTEX_SMOKE_MODEL", "vertex_ai/gemini-3.5-flash"),
+    )
+
+    manifest = llm.generate_schema(
+        "A research agent that needs a required topic and an optional source URL."
+    )
+    valid, errors = llm.validate_manifest(manifest)
+    assert valid, errors

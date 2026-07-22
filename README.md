@@ -196,14 +196,19 @@ MONGODB_URI=mongodb://localhost:27017
 ```
 
 The application creates one shared LiteLLM `Router` and sends the gateway a
-JSON-object completion request with an 8,000-token output limit. The configured
-model name may be bare or start with `openai/`; the application adds that
-provider prefix when needed because the gateway uses the OpenAI-compatible wire
-format.
+completion request with an 8,000-token output limit and a configurable provider
+deadline (`LLM_GENERATION_TIMEOUT_SECONDS`, 45 seconds by default). The
+configured model name may be bare or start with `openai/`; the application adds
+that provider prefix when needed because the gateway uses the OpenAI-compatible
+wire format.
 
-Gateway responses are parsed as strict JSON first. Common truncation and syntax
-problems are repaired when possible, after which the normal structural and
-semantic manifest validation gates still apply.
+When LiteLLM reports that the selected model supports response schemas, the
+request includes the complete manifest meta-schema; other models use JSON-object
+mode. Responses are parsed as strict JSON first, with repair for common
+truncation and syntax problems. Invalid JSON or a manifest that fails backend
+validation receives exactly one correction attempt containing the validation
+errors. Provider errors are mapped to generic API messages so credentials or
+provider internals never reach the browser.
 
 Optional generation-level Langfuse tracing activates when both keys are set:
 
@@ -346,9 +351,12 @@ curl -X POST http://localhost:8000/generate \
 
 Every manifest passes two validation layers:
 
-1. Structural validation against `backend/meta_schema.py`.
-2. Semantic validation in `backend/validation.py`, including field references,
-   ordering, required fields, and wizard-group ownership.
+1. Safety validation rejects references, HTML/scripts, custom widgets, and
+   application-owned identity or permission metadata.
+2. Structural validation against `backend/meta_schema.py` enforces the audited
+   field subset and the 30-field maximum.
+3. Semantic validation in `backend/validation.py` checks field constraints,
+   references, ordering, required fields, and wizard-group ownership.
 
 The strict gate applies during generation, preview, and publishing. An
 in-progress editor draft may be autosaved with validation errors so work is not
@@ -380,6 +388,16 @@ MongoDB uses two persistence states:
 cd backend
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
+```
+
+All normal LLM tests mock LiteLLM, so CI makes no paid or flaky provider calls.
+To run the optional real Vertex AI smoke test locally after configuring
+Application Default Credentials:
+
+```powershell
+$env:RUN_VERTEX_AI_SMOKE_TEST="true"
+$env:VERTEX_SMOKE_MODEL="vertex_ai/gemini-3.5-flash"
+python -m pytest -q test_llm.py -k optional_real_vertex_ai_smoke
 ```
 
 ### Frontend
@@ -432,12 +450,13 @@ their workflow stage needs them.
   development CORS configuration.
 - Restart Vite after editing `frontend/.env.local`.
 
-### Generated manifest returns `422`
+### Generated screen request fails
 
-The LLM produced JSON that violated the manifest contract. Review the error list
-returned by the backend. Typical causes include missing fields in
-`field_order`, unknown group fields, duplicate group ownership, or an invalid
-wizard layout.
+The backend retries invalid LLM output once. A `502` after that means both
+responses violated the manifest contract or the provider request failed; a
+`504` means the configured generation timeout expired. Review backend logs for
+the failure category without exposing credentials to the browser. Direct
+`/validate` requests still return `422` with actionable manifest errors.
 
 ## Security notes
 

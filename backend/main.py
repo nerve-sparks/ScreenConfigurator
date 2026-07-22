@@ -6,8 +6,9 @@ The backend knows only the manifest contract; it never branches on
 any specific agent name or type.
 """
 
-from contextlib import asynccontextmanager
+import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -30,9 +31,18 @@ from db import (
     set_screen_archived,
     slugify,
 )
-from llm import PROMPT_VERSION, generate_schema
+from llm import (
+    PROMPT_VERSION,
+    LLMConfigurationError,
+    LLMOutputError,
+    LLMProviderError,
+    LLMTimeoutError,
+    generate_schema,
+)
 from manifest_migrations import upgrade_legacy_layout
 from validation import validate_manifest
+
+logger = logging.getLogger(__name__)
 
 # Vite dev server origins allowed to call this API.
 FRONTEND_ORIGINS = [
@@ -94,14 +104,42 @@ def generate(request: GenerateRequest) -> dict:
 
     try:
         manifest = generate_schema(description)
+    except LLMConfigurationError as exc:
+        logger.error("LLM generation is not configured (%s).", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AI generation is not configured. Contact the application "
+                "administrator."
+            ),
+        ) from exc
+    except LLMTimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="AI generation timed out. Please try again.",
+        ) from exc
+    except LLMOutputError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI provider returned an invalid screen definition after one "
+                "correction attempt. Please try again."
+            ),
+        ) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider request failed. Please try again.",
+        ) from exc
     except Exception as exc:
-        # llm.py raises clear, descriptive errors (missing config, LLM/network
-        # failure, unparseable response). Surface the message instead of an
-        # opaque 500 so the frontend can show what actually went wrong.
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.error("Unexpected AI generation failure (%s).", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="AI generation failed unexpectedly. Please try again.",
+        ) from exc
 
-    # Validation is the gate: return the error list instead of a form.
-    # (Auto-retrying the LLM with these errors is deliberately deferred.)
+    # Defense in depth: llm.py already validates and retries once, but the
+    # route still refuses an invalid value if generation is mocked or changed.
     return _ensure_valid_manifest(manifest, "Generated manifest failed validation.")
 
 

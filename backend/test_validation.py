@@ -7,6 +7,8 @@ Or, if you prefer pytest:
 """
 
 import copy
+import os
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from pymongo.errors import PyMongoError
@@ -59,6 +61,105 @@ def test_good_manifest_passes():
     ok, errors = validate_manifest(GOOD_MANIFEST)
     assert ok, f"expected valid, got: {errors}"
     assert errors == []
+
+
+def test_more_than_thirty_input_fields_are_rejected():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    properties = {
+        f"field_{index}": {"type": "string", "title": f"Field {index}"}
+        for index in range(31)
+    }
+    manifest["input_schema"]["properties"] = properties
+    manifest["input_schema"]["required"] = []
+    manifest["ui_hints"]["field_order"] = list(properties)
+
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("too long" in error or "too many" in error for error in errors)
+
+
+def test_schema_references_are_rejected_before_rendering():
+    for reference in (
+        "https://untrusted.example/schema.json",
+        "#/$defs/remote-field",
+    ):
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["input_schema"]["properties"]["subject"] = {"$ref": reference}
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any("$ref" in error and "not supported" in error for error in errors)
+
+
+def test_html_and_script_directives_are_rejected():
+    unsafe_values = (
+        "<img src=x onerror=alert(1)>",
+        "javascript:alert(document.cookie)",
+        "Click <script>alert(1)</script>",
+    )
+    for unsafe_value in unsafe_values:
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["input_schema"]["properties"]["subject"][
+            "description"
+        ] = unsafe_value
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any("safety" in error for error in errors)
+
+
+def test_custom_widgets_and_unsupported_field_keywords_are_rejected():
+    for key, value in (
+        ("ui:widget", "password"),
+        ("widget", "rich-text"),
+        ("pattern", ".*"),
+    ):
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["input_schema"]["properties"]["subject"][key] = value
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        if "widget" in key:
+            assert any("custom widgets" in error for error in errors)
+        else:
+            assert any("structural" in error for error in errors)
+
+
+def test_llm_cannot_set_application_identifiers_or_permissions():
+    for key, value in (
+        ("agent_id", "admin-agent"),
+        ("database_id", "system-record"),
+        ("permissions", ["admin"]),
+    ):
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest[key] = value
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any(
+            "application-controlled" in error and key in error for error in errors
+        )
+
+
+def test_only_renderer_supported_types_and_formats_are_accepted():
+    invalid_definitions = (
+        {"type": "array", "title": "Tags"},
+        {"type": "string", "title": "Phone", "format": "phone"},
+    )
+    for definition in invalid_definitions:
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["input_schema"]["properties"]["subject"] = definition
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any("structural" in error for error in errors)
+
+
+def test_field_constraints_must_match_the_declared_type():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["input_schema"]["properties"]["subject"] = {
+        "type": "integer",
+        "title": "Priority",
+        "enum": ["high", "low"],
+    }
+    ok, errors = validate_manifest(manifest)
+    assert not ok
+    assert any("enum values" in error and "integer" in error for error in errors)
 
 
 def test_missing_input_schema_is_rejected():
@@ -299,6 +400,59 @@ def test_generate_route_returns_422_on_bad_llm_output():
         assert raised.detail["errors"], "expected a non-empty error list"
     finally:
         main.generate_schema = original
+
+
+def test_generate_route_sanitizes_llm_failures():
+    cases = (
+        (
+            main.LLMConfigurationError("secret gateway configuration"),
+            503,
+            "not configured",
+        ),
+        (main.LLMTimeoutError("secret provider timeout"), 504, "timed out"),
+        (
+            main.LLMOutputError("secret malformed provider output"),
+            502,
+            "invalid screen definition",
+        ),
+        (main.LLMProviderError("secret api_key=abc123"), 502, "request failed"),
+    )
+    original = main.generate_schema
+    try:
+        for provider_error, status_code, expected_detail in cases:
+            def raise_provider_error(_description, error=provider_error):
+                raise error
+
+            main.generate_schema = raise_provider_error
+            raised = None
+            try:
+                main.generate(GenerateRequest(description="an email agent"))
+            except HTTPException as exc:
+                raised = exc
+            assert raised is not None, "expected HTTPException to be raised"
+            assert raised.status_code == status_code
+            assert expected_detail in raised.detail
+            assert "secret" not in raised.detail
+            assert "abc123" not in raised.detail
+    finally:
+        main.generate_schema = original
+
+
+def test_generation_metadata_records_model_and_prompt_version():
+    with patch.dict(
+        os.environ,
+        {
+            "LITE_LLM_ENABLE": "true",
+            "LITE_LLM_MODEL_GEMINI": "gemini/gemini-3.5-flash",
+        },
+    ):
+        metadata = main._generation_metadata()
+
+    assert metadata == {
+        "provider": "litellm_gateway",
+        "model": "gemini/gemini-3.5-flash",
+        "prompt_version": "2",
+    }
 
 
 def test_validate_route_returns_validated_manifest():
