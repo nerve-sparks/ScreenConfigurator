@@ -62,14 +62,17 @@ export default function PreviewPage() {
         if (!document?.manifest?.input_schema) {
           throw new Error('Saved screen is missing its manifest.')
         }
+        const friendlyName = document.presentation?.display_name
+          || document.name
+          || document.agent_id
         setPayload({
           manifest: document.manifest,
           description: document.description ?? '',
-          name: document.agent_id,
+          name: friendlyName,
           savedAgentId: document.agent_id,
           version: document.version,
           presentation: normalizePresentation(document.presentation, {
-            name: document.agent_id,
+            name: friendlyName,
             description: document.description ?? '',
           }),
           returnPath: encodedPath('/builder', document.agent_id, '/edit'),
@@ -98,16 +101,19 @@ export default function PreviewPage() {
         draftRevision: payload.draftRevision,
         changeSummary: changeSummary.trim(),
       })
+      const friendlyName = payload.presentation?.display_name
+        || payload.name
+        || result.agent_id
       const publishedPayload = {
         ...payload,
-        name: result.agent_id,
+        name: friendlyName,
         savedAgentId: result.agent_id,
         version: result.version,
         returnPath: encodedPath('/builder', result.agent_id, '/edit'),
         reviewDraft: null,
       }
       setPayload(publishedPayload)
-      setNotice(`Published “${result.agent_id}” version ${result.version}.`)
+      setNotice(`Published “${friendlyName}” version ${result.version}.`)
       savePreviewDraft(publishedPayload)
       navigate(`${encodedPath('/preview', result.agent_id)}?version=${result.version}`, {
         replace: true,

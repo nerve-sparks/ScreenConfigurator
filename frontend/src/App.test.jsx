@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.jsx'
 import {
+  createDraft,
   duplicateScreen,
   generate,
   listScreenVersions,
@@ -19,6 +20,7 @@ import {
 import { savePreviewDraft } from './routeDraft.js'
 
 vi.mock('./api.js', () => ({
+  createDraft: vi.fn(),
   duplicateScreen: vi.fn(),
   generate: vi.fn(),
   listScreenVersions: vi.fn(),
@@ -97,7 +99,13 @@ beforeEach(() => {
     is_archived: true,
   })
   saveDraft.mockResolvedValue({
-    agent_id: 'an-agent-that-researches-a-topic',
+    agent_id: 'research-agent',
+    status: 'draft',
+    revision: 'draft-revision-1',
+    published_version: null,
+  })
+  createDraft.mockResolvedValue({
+    agent_id: 'research-agent',
     status: 'draft',
     revision: 'draft-revision-1',
     published_version: null,
@@ -134,19 +142,58 @@ describe('builder route', () => {
     expect(screen.getByLabelText('Describe your agent').value).toContain(
       'research agent',
     )
+    const generateButton = within(
+      screen.getByLabelText('Agent configuration'),
+    ).getByRole('button', { name: 'Generate' })
+    expect(generateButton).toBeDisabled()
+
+    await user.type(screen.getByLabelText('Agent name'), 'Research Agent')
+    expect(screen.getByText('research-agent')).toBeInTheDocument()
     expect(
-      within(screen.getByLabelText('Agent configuration')).getByRole('button', {
-        name: 'Generate',
-      }),
+      generateButton,
     ).toBeEnabled()
+  })
+
+  it('requires a name that can produce a valid screen ID', async () => {
+    const user = userEvent.setup()
+    renderApp()
+
+    await user.type(
+      await screen.findByLabelText('Describe your agent'),
+      'An agent that researches a topic',
+    )
+    await user.type(screen.getByLabelText('Agent name'), '!!!')
+
+    expect(screen.getByText('Enter a name with letters or numbers')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Generate' })).toBeDisabled()
+    expect(generate).not.toHaveBeenCalled()
+  })
+
+  it('rejects an existing screen ID before calling the LLM', async () => {
+    const user = userEvent.setup()
+    listScreens.mockResolvedValueOnce([{ agent_id: 'research-agent' }])
+    renderApp()
+
+    await user.type(await screen.findByLabelText('Agent name'), 'Research Agent')
+    await user.type(
+      screen.getByLabelText('Describe your agent'),
+      'An agent that researches a topic',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'A screen with ID “research-agent” already exists.',
+    )
+    expect(generate).not.toHaveBeenCalled()
   })
 
   it('navigates to an isolated preview only after review is complete', async () => {
     const user = userEvent.setup()
     renderApp()
 
+    await user.type(await screen.findByLabelText('Agent name'), 'Research Agent')
     await user.type(
-      await screen.findByLabelText('Describe your agent'),
+      screen.getByLabelText('Describe your agent'),
       'An agent that researches a topic',
     )
     await user.click(screen.getByRole('button', { name: 'Generate' }))
@@ -167,9 +214,7 @@ describe('builder route', () => {
       }),
     ).toBeInTheDocument()
     expect(await screen.findByLabelText(/Topic/)).toBeInTheDocument()
-    expect(screen.getByLabelText('Screen ID')).toHaveValue(
-      'an-agent-that-researches-a-topic',
-    )
+    expect(screen.getByLabelText('Screen ID')).toHaveValue('research-agent')
     expect(screen.getByRole('link', { name: /Back to builder/ })).toBeInTheDocument()
     expect(screen.queryByLabelText('Describe your agent')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Review suggested inputs' })).not.toBeInTheDocument()
@@ -179,14 +224,19 @@ describe('builder route', () => {
     const user = userEvent.setup()
     renderApp()
 
+    await user.type(await screen.findByLabelText('Agent name'), 'Research Agent')
     await user.type(
-      await screen.findByLabelText('Describe your agent'),
+      screen.getByLabelText('Describe your agent'),
       'An agent that researches a topic',
     )
     await user.click(screen.getByRole('button', { name: 'Generate' }))
     await screen.findByRole('heading', { name: 'Review suggested inputs' })
 
+    await waitFor(() => expect(createDraft).toHaveBeenCalled(), { timeout: 2000 })
+    await waitFor(() => expect(screen.getByLabelText('Agent name')).toBeEnabled())
+    await user.clear(screen.getByLabelText('Agent name'))
     await user.type(screen.getByLabelText('Agent name'), 'Research Copilot')
+    expect(screen.getByText('research-agent')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Compass icon' }))
     await user.clear(screen.getByLabelText('Welcome title'))
     await user.type(screen.getByLabelText('Welcome title'), 'Plan your research')
@@ -199,23 +249,59 @@ describe('builder route', () => {
       'data-device',
       'mobile',
     )
+    await waitFor(() => expect(saveDraft).toHaveBeenCalled(), { timeout: 2000 })
+    expect(saveDraft.mock.calls.at(-1)[0]).toBe('research-agent')
+    expect(saveDraft.mock.calls.at(-1)[1].name).toBe('Research Copilot')
   })
 
   it('autosaves edits as a draft without publishing a version', async () => {
     const user = userEvent.setup()
     renderApp()
 
+    await user.type(await screen.findByLabelText('Agent name'), 'Research Agent')
     await user.type(
-      await screen.findByLabelText('Describe your agent'),
+      screen.getByLabelText('Describe your agent'),
       'An agent that researches a topic',
     )
     await user.click(screen.getByRole('button', { name: 'Generate' }))
     await screen.findByRole('heading', { name: 'Review suggested inputs' })
 
-    await waitFor(() => expect(saveDraft).toHaveBeenCalled(), { timeout: 2000 })
-    expect(saveDraft.mock.calls[0][0]).toBe('an-agent-that-researches-a-topic')
-    expect(saveDraft.mock.calls[0][1]).not.toHaveProperty('approvedManifest')
+    await waitFor(() => expect(createDraft).toHaveBeenCalled(), { timeout: 2000 })
+    expect(createDraft.mock.calls[0][0]).toBe('research-agent')
+    expect(createDraft.mock.calls[0][1]).not.toHaveProperty('approvedManifest')
+    expect(saveDraft).not.toHaveBeenCalled()
     expect(publishDraft).not.toHaveBeenCalled()
+  })
+
+  it('uses PUT for an edit queued while the first draft POST is pending', async () => {
+    const user = userEvent.setup()
+    let resolveCreate
+    createDraft.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveCreate = resolve
+    }))
+    renderApp()
+
+    await user.type(await screen.findByLabelText('Agent name'), 'Research Agent')
+    await user.type(
+      screen.getByLabelText('Describe your agent'),
+      'An agent that researches a topic',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+    await screen.findByRole('heading', { name: 'Review suggested inputs' })
+    await waitFor(() => expect(createDraft).toHaveBeenCalledTimes(1), { timeout: 2000 })
+
+    await user.click(screen.getAllByRole('button', { name: 'Approve' })[0])
+    await screen.findByText('Saving draft…', {}, { timeout: 2000 })
+    resolveCreate({
+      agent_id: 'research-agent',
+      status: 'draft',
+      revision: 'created-revision',
+      published_version: null,
+    })
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1), { timeout: 2000 })
+    expect(createDraft).toHaveBeenCalledTimes(1)
+    expect(saveDraft.mock.calls[0][0]).toBe('research-agent')
   })
 
   it('keeps the draft in review when backend validation rejects it', async () => {
@@ -223,8 +309,9 @@ describe('builder route', () => {
     validateScreen.mockRejectedValueOnce(new Error('Manifest failed validation.'))
     renderApp()
 
+    await user.type(await screen.findByLabelText('Agent name'), 'Research Agent')
     await user.type(
-      await screen.findByLabelText('Describe your agent'),
+      screen.getByLabelText('Describe your agent'),
       'An agent that researches a topic',
     )
     await user.click(screen.getByRole('button', { name: 'Generate' }))
@@ -245,8 +332,9 @@ describe('builder route', () => {
     const user = userEvent.setup()
     renderApp()
 
+    await user.type(await screen.findByLabelText('Agent name'), 'Research Agent')
     await user.type(
-      await screen.findByLabelText('Describe your agent'),
+      screen.getByLabelText('Describe your agent'),
       'An agent that researches a topic',
     )
     await user.click(screen.getByRole('button', { name: 'Generate' }))
@@ -309,6 +397,31 @@ describe('builder route', () => {
     expect(loadDraft).toHaveBeenCalledWith('research-agent')
     expect(loadScreen).not.toHaveBeenCalled()
     expect(screen.getByDisplayValue('A draft research agent')).toBeInTheDocument()
+  })
+
+  it('shows a friendly name when opening a legacy long-ID draft', async () => {
+    const legacyId = 'i-want-to-create-an-ai-travel-planner-agent'
+    loadDraft.mockResolvedValueOnce({
+      agent_id: legacyId,
+      status: 'draft',
+      revision: 'legacy-revision',
+      published_version: null,
+      description: 'A travel planning agent',
+      draft_manifest: generatedManifest,
+      editor_state: null,
+      name: 'AI Travel Planner',
+      presentation: {
+        ...savedDocument.presentation,
+        display_name: 'AI Travel Planner',
+      },
+    })
+
+    renderApp(`/builder/${legacyId}/edit`)
+
+    expect(
+      await screen.findByText('Editing the working draft for “AI Travel Planner”.'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(legacyId)).toBeInTheDocument()
   })
 })
 
@@ -548,6 +661,11 @@ describe('separated screen routes', () => {
     savePreviewDraft({
       manifest: generatedManifest,
       description: 'A research agent',
+      name: 'Research Copilot',
+      presentation: {
+        ...savedDocument.presentation,
+        display_name: 'Research Copilot',
+      },
       returnPath: '/builder/new',
       reviewDraft: { manifest: generatedManifest, fields: {}, deletedFields: [] },
       draftAgentId: 'research-agent',
@@ -567,6 +685,9 @@ describe('separated screen routes', () => {
     expect(await screen.findByRole('link', { name: 'Open published screen' })).toHaveAttribute(
       'href',
       '/screens/research-agent?version=1',
+    )
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Published “Research Copilot” version 1.',
     )
     expect(screen.queryByLabelText('Screen name')).not.toBeInTheDocument()
   })

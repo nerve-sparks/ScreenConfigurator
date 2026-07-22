@@ -21,6 +21,7 @@ from db import (
     ensure_indexes,
     get_draft,
     get_manifest,
+    insert_draft,
     list_agents,
     list_versions,
     publish_draft,
@@ -264,10 +265,13 @@ def save_screen(request: SaveScreenRequest) -> dict:
     return {"agent_id": agent_id, "version": version}
 
 
-@app.put("/screens/{agent_id}/draft")
-def put_screen_draft(agent_id: str, request: SaveDraftRequest) -> dict:
-    """Autosave one mutable working draft without creating a version."""
-    agent_id = _validated_agent_id(agent_id)
+def _persist_screen_draft(
+    agent_id: str,
+    request: SaveDraftRequest,
+    *,
+    create: bool = False,
+) -> dict:
+    """Validate and persist draft contents for both create and update routes."""
     manifest = upgrade_legacy_layout(request.manifest)
     valid, validation_errors = validate_manifest(manifest)
 
@@ -280,7 +284,8 @@ def put_screen_draft(agent_id: str, request: SaveDraftRequest) -> dict:
         )
 
     try:
-        document = save_draft(
+        persist = insert_draft if create else save_draft
+        document = persist(
             agent_id=agent_id,
             draft_manifest=manifest,
             description=request.description.strip(),
@@ -292,10 +297,67 @@ def put_screen_draft(agent_id: str, request: SaveDraftRequest) -> dict:
             approved_manifest=approved_manifest,
             generation=_generation_metadata(),
         )
+    except DuplicateKeyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A screen with agent_id '{agent_id}' already exists. "
+                "Choose a different agent name or open the existing screen."
+            ),
+        ) from exc
     except PyMongoError as exc:
         raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
 
     return document
+
+
+@app.post("/screens/{agent_id}/draft", status_code=201)
+def create_screen_draft(agent_id: str, request: SaveDraftRequest) -> dict:
+    """Create the first draft without overwriting an existing screen identity."""
+    agent_id = _validated_agent_id(agent_id)
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=422,
+            detail="name is required when creating a screen draft.",
+        )
+    if slugify(name) != agent_id:
+        raise HTTPException(
+            status_code=422,
+            detail="agent_id must be derived from the supplied screen name.",
+        )
+    try:
+        already_exists = screen_exists(agent_id)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if already_exists:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A screen with agent_id '{agent_id}' already exists. "
+                "Choose a different agent name or open the existing screen."
+            ),
+        )
+    return _persist_screen_draft(agent_id, request, create=True)
+
+
+@app.put("/screens/{agent_id}/draft")
+def put_screen_draft(agent_id: str, request: SaveDraftRequest) -> dict:
+    """Autosave an existing mutable draft without creating a version."""
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        already_exists = screen_exists(agent_id)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if not already_exists:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No screen found for agent_id '{agent_id}'. "
+                "Create its first draft with POST before updating it."
+            ),
+        )
+    return _persist_screen_draft(agent_id, request)
 
 
 @app.get("/screens/{agent_id}/draft")

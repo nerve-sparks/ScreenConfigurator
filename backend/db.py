@@ -173,6 +173,51 @@ def save_draft(
     return get_draft(agent_id) or {}
 
 
+def insert_draft(
+    agent_id: str,
+    draft_manifest: dict,
+    description: str,
+    name: str,
+    source: str,
+    presentation: Optional[dict],
+    editor_state: Optional[dict],
+    validation_errors: list[str],
+    approved_manifest: Optional[dict] = None,
+    generation: Optional[dict] = None,
+) -> dict:
+    """Atomically create a screen's first draft.
+
+    Unlike ``save_draft``, this function never upserts or replaces an existing
+    identity. The unique ``(agent_id, version)`` index treats the missing draft
+    version as one value, so concurrent creates for the same ID result in one
+    successful insert and one ``DuplicateKeyError``.
+    """
+    now = _utc_now()
+    latest = get_manifest(agent_id)
+    document = {
+        "agent_id": agent_id,
+        "screen_id": agent_id,
+        "name": name,
+        "description": description,
+        "status": "draft",
+        "draft_manifest": draft_manifest,
+        "source": source,
+        "presentation": presentation or {},
+        "editor_state": editor_state or {},
+        "generation": generation or {},
+        "validation_errors": validation_errors,
+        "published_version": latest["version"] if latest else None,
+        "revision": uuid4().hex,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if approved_manifest is not None:
+        document["approved_manifest"] = approved_manifest
+
+    _collection.insert_one(document)
+    return get_draft(agent_id) or {}
+
+
 def get_draft(agent_id: str) -> Optional[dict]:
     return _collection.find_one(
         {"agent_id": agent_id, "status": "draft"}, projection={"_id": False}

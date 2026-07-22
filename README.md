@@ -302,8 +302,9 @@ links such as `/screens/email-agent` can be handled by React Router.
 
 ## Using the application
 
-1. Describe the agent's job and the information it needs.
-2. Select **Generate inputs**.
+1. Enter a short agent name and describe the agent's job and required information.
+2. Confirm the derived screen ID and select **Generate inputs**. The ID becomes
+   stable when the first draft is created; later display-name edits do not rename it.
 3. Review every AI-suggested input.
 4. Approve, edit, exclude, or remove fields.
 5. Add any missing human-authored inputs.
@@ -327,7 +328,8 @@ before the screen can reach preview.
 | --- | --- | --- |
 | `POST` | `/generate` | Generate and validate a manifest from an agent description. |
 | `POST` | `/validate` | Validate the human-reviewed manifest before preview. |
-| `PUT` | `/screens/{agent_id}/draft` | Create or update the single mutable working draft. |
+| `POST` | `/screens/{agent_id}/draft` | Create the first draft, rejecting mismatched or existing IDs. |
+| `PUT` | `/screens/{agent_id}/draft` | Update an existing mutable working draft. |
 | `GET` | `/screens/{agent_id}/draft` | Load the working draft and human-review state. |
 | `POST` | `/screens/{agent_id}/publish` | Validate and publish the current draft revision. |
 | `POST` | `/screens` | Legacy direct-publish endpoint for older clients. |

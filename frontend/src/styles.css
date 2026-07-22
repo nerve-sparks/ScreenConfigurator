@@ -2452,13 +2452,50 @@ select:focus-visible {
 }
 
 .editor-prompt-panel .form-control {
-  min-height: 132px;
   padding: 11px 12px;
   border-color: rgb(255 255 255 / 12%);
   background: rgb(5 10 24 / 45%);
   box-shadow: none;
   color: white;
   font-size: 0.75rem;
+}
+
+.editor-prompt-panel textarea.form-control {
+  min-height: 132px;
+}
+
+.editor-agent-name {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.editor-agent-name input.form-control {
+  min-height: 40px;
+}
+
+.screen-id-preview {
+  display: grid;
+  gap: 2px;
+  color: #8e98ad;
+  font-size: 0.57rem;
+}
+
+.screen-id-preview span {
+  color: #aeb7c8;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.screen-id-preview code {
+  overflow-wrap: anywhere;
+  color: #c8c4ff;
+  font-size: 0.62rem;
+}
+
+.screen-id-preview small {
+  line-height: 1.35;
 }
 
 .editor-prompt-panel .form-control::placeholder {

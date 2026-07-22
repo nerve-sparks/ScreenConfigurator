@@ -79,8 +79,7 @@ export async function loadScreen(agentId, version = null) {
   return response.json()
 }
 
-// Update the one mutable editor draft. This never creates a published version.
-export async function saveDraft(agentId, {
+async function writeDraft(agentId, method, {
   manifest,
   approvedManifest,
   description,
@@ -92,7 +91,7 @@ export async function saveDraft(agentId, {
   const response = await fetch(
     `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/draft`,
     {
-      method: 'PUT',
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         manifest,
@@ -111,6 +110,16 @@ export async function saveDraft(agentId, {
     throw new Error('Backend returned an invalid draft response.')
   }
   return result
+}
+
+// Create the first mutable draft. The backend refuses an existing agent ID.
+export async function createDraft(agentId, payload) {
+  return writeDraft(agentId, 'POST', payload)
+}
+
+// Update the one mutable editor draft. This never creates a published version.
+export async function saveDraft(agentId, payload) {
+  return writeDraft(agentId, 'PUT', payload)
 }
 
 export async function loadDraft(agentId) {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  createDraft,
   duplicateScreen,
   listScreenVersions,
   listScreens,
@@ -188,6 +189,32 @@ describe('saveScreen', () => {
 })
 
 describe('draft lifecycle', () => {
+  it('creates the first draft without using the update method', async () => {
+    const response = {
+      agent_id: 'research-agent',
+      status: 'draft',
+      revision: 'revision-new',
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => response,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const payload = {
+      manifest: { input_schema: {}, ui_hints: {} },
+      description: 'Research assistant',
+      name: 'Research Agent',
+      presentation: { display_name: 'Research Agent' },
+      editorState: { fields: {} },
+    }
+
+    await expect(createDraft('research-agent', payload)).resolves.toEqual(response)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/screens\/research-agent\/draft$/),
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('autosaves editor state through the mutable draft endpoint', async () => {
     const response = {
       agent_id: 'research-agent',

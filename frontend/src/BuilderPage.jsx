@@ -1,6 +1,14 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { generate, loadDraft, loadScreen, saveDraft, validateScreen } from './api.js'
+import {
+  createDraft,
+  generate,
+  listScreens,
+  loadDraft,
+  loadScreen,
+  saveDraft,
+  validateScreen,
+} from './api.js'
 import { isWizardManifest } from './manifestLayout.js'
 import {
   REVIEW_STATUS,
@@ -113,21 +121,8 @@ function AppearanceInspector({
     <aside id="appearance" className="editor-inspector" aria-label="Appearance properties">
       <div className="inspector-heading">
         <span className="section-kicker">Properties</span>
-        <h2>Agent identity</h2>
+        <h2>Screen appearance</h2>
         <p>These settings affect preview and published routes, never the validated manifest.</p>
-      </div>
-
-      <div className="inspector-section">
-        <label htmlFor="agent-display-name">Agent name</label>
-        <input
-          id="agent-display-name"
-          className="form-control"
-          value={presentation.display_name}
-          onChange={(event) => updatePresentation('display_name', event.target.value)}
-          placeholder="e.g. Research Copilot"
-          maxLength={80}
-          disabled={disabled}
-        />
       </div>
 
       <fieldset className="inspector-section icon-property">
@@ -316,6 +311,9 @@ export default function BuilderPage() {
   const [savedVersion, setSavedVersion] = useState(initialState.savedVersion)
   const [draftAgentId, setDraftAgentId] = useState(initialState.draftAgentId)
   const [draftRevision, setDraftRevision] = useState(initialState.draftRevision)
+  const [hasPersistedDraft, setHasPersistedDraft] = useState(
+    Boolean(editing || initialState.draftRevision),
+  )
   const [draftSaveStatus, setDraftSaveStatus] = useState(
     initialState.draftRevision ? 'Draft saved' : 'Draft not saved',
   )
@@ -328,6 +326,7 @@ export default function BuilderPage() {
   const [notice, setNotice] = useState(null)
   const lastSavedSnapshotRef = useRef(null)
   const autosavePromiseRef = useRef(Promise.resolve())
+  const hasPersistedDraftRef = useRef(hasPersistedDraft)
 
   const fields = useMemo(() => orderedReviewFields(reviewDraft), [reviewDraft])
   const selectedField = fields.find((field) => field.name === selectedFieldName) ?? null
@@ -336,6 +335,12 @@ export default function BuilderPage() {
   const progressPercent = progress.total ? Math.round((reviewedCount / progress.total) * 100) : 0
   const wizardMode = Boolean(reviewDraft && isWizardManifest(reviewDraft.manifest))
   const projectTitle = presentation.display_name || draftAgentId || screenId || 'Untitled agent'
+  const proposedAgentId = screenIdFrom(presentation.display_name)
+  const agentIdPreview = draftAgentId ?? screenId ?? proposedAgentId
+  const requiresNewAgentName = !draftAgentId && !screenId
+  const canGenerate = Boolean(
+    description.trim() && (!requiresNewAgentName || proposedAgentId),
+  )
 
   useEffect(() => {
     if (fields.length === 0) {
@@ -360,6 +365,9 @@ export default function BuilderPage() {
       setDraftAgentId(resumed.draftAgentId ?? screenId ?? null)
       setDraftRevision(resumed.draftRevision ?? null)
       setDraftSaveStatus(resumed.draftRevision ? 'Draft saved' : 'Draft not saved')
+      const resumedDraftIsPersisted = Boolean(screenId || resumed.draftRevision)
+      hasPersistedDraftRef.current = resumedDraftIsPersisted
+      setHasPersistedDraft(resumedDraftIsPersisted)
       lastSavedSnapshotRef.current = resumed.reviewDraft
         ? draftSnapshot({
             manifest: resumed.reviewDraft.manifest,
@@ -384,6 +392,8 @@ export default function BuilderPage() {
       setDraftAgentId(null)
       setDraftRevision(null)
       setDraftSaveStatus('Draft not saved')
+      hasPersistedDraftRef.current = false
+      setHasPersistedDraft(false)
       lastSavedSnapshotRef.current = null
       setLoadingSaved(false)
       setError(null)
@@ -417,13 +427,16 @@ export default function BuilderPage() {
         setDraftAgentId(draft.agent_id)
         setDraftRevision(draft.revision)
         setDraftSaveStatus('Draft saved')
+        hasPersistedDraftRef.current = true
+        setHasPersistedDraft(true)
         lastSavedSnapshotRef.current = draftSnapshot({
           manifest: restoredReview.manifest,
           description: draft.description ?? '',
           presentation: restoredPresentation,
           editorState: restoredReview,
         })
-        setNotice(`Editing the working draft for “${draft.agent_id}”.`)
+        const friendlyName = restoredPresentation.display_name || draft.name || draft.agent_id
+        setNotice(`Editing the working draft for “${friendlyName}”.`)
       } catch (draftError) {
         if (draftError.status !== 404) throw draftError
         const document = await loadScreen(screenId)
@@ -445,6 +458,8 @@ export default function BuilderPage() {
         setReviewDraft(restoredReview)
         setDraftAgentId(document.agent_id)
         setDraftRevision(null)
+        hasPersistedDraftRef.current = true
+        setHasPersistedDraft(true)
         lastSavedSnapshotRef.current = null
         setNotice(`Created a working draft from published version ${document.version}.`)
       }
@@ -470,11 +485,25 @@ export default function BuilderPage() {
     setReviewDraft(null)
     try {
       const cleanDescription = description.trim()
+      const creatingNewScreen = !draftAgentId && !screenId
+      const requestedAgentId = screenIdFrom(presentation.display_name)
+      if (creatingNewScreen) {
+        if (!requestedAgentId) {
+          throw new Error('Enter a short agent name containing letters or numbers.')
+        }
+        const savedScreens = await listScreens()
+        if (savedScreens.some((screen) => screen.agent_id === requestedAgentId)) {
+          throw new Error(
+            `A screen with ID “${requestedAgentId}” already exists. `
+            + 'Choose a different agent name or open it from the library.',
+          )
+        }
+      }
       const result = await generate(cleanDescription)
       if (!result?.input_schema) throw new Error('Backend response is missing “input_schema”.')
       const nextAgentId = draftAgentId
         ?? screenId
-        ?? screenIdFrom(presentation.display_name || cleanDescription)
+        ?? requestedAgentId
       setDraftAgentId(nextAgentId || null)
       setDraftRevision(null)
       setDraftSaveStatus('Draft not saved')
@@ -521,24 +550,36 @@ export default function BuilderPage() {
       setDraftSaveStatus('Saving draft…')
       const operation = autosavePromiseRef.current
         .catch(() => undefined)
-        .then(() => saveDraft(draftAgentId, {
-          manifest: reviewDraft.manifest,
-          description: sourceDescription,
-          name: presentation.display_name || draftAgentId,
-          presentation: normalizedPresentation,
-          editorState: reviewDraft,
-        }))
+        .then(() => {
+          const persistDraft = hasPersistedDraftRef.current ? saveDraft : createDraft
+          return persistDraft(draftAgentId, {
+            manifest: reviewDraft.manifest,
+            description: sourceDescription,
+            name: presentation.display_name || draftAgentId,
+            presentation: normalizedPresentation,
+            editorState: reviewDraft,
+          })
+        })
       autosavePromiseRef.current = operation
       operation
         .then((document) => {
-          if (cancelled) return
+          // Keep persistence bookkeeping even when a newer edit has cleaned up
+          // this effect. The next queued save must switch from POST to PUT.
           lastSavedSnapshotRef.current = snapshot
+          hasPersistedDraftRef.current = true
+          if (cancelled) return
+          setHasPersistedDraft(true)
           setDraftRevision(document.revision)
           setSavedVersion(document.published_version ?? null)
           setDraftSaveStatus('Draft saved')
         })
         .catch((err) => {
           if (cancelled) return
+          if (!hasPersistedDraftRef.current) {
+            setDraftAgentId(null)
+            setDraftRevision(null)
+            setHasPersistedDraft(false)
+          }
           setDraftSaveStatus('Draft save failed')
           setError(`Draft autosave failed: ${err.message}`)
         })
@@ -568,16 +609,17 @@ export default function BuilderPage() {
       const manifest = await validateScreen(candidate)
       const agentId = draftAgentId
         ?? screenId
-        ?? screenIdFrom(presentation.display_name || sourceDescription)
+        ?? screenIdFrom(presentation.display_name)
       if (!agentId) {
-        throw new Error('Add an agent name or a descriptive brief before publishing.')
+        throw new Error('Add a valid agent name before publishing.')
       }
       await autosavePromiseRef.current.catch(() => undefined)
       const normalizedPresentation = normalizePresentation(presentation, {
         name: agentId,
         description: sourceDescription,
       })
-      const draft = await saveDraft(agentId, {
+      const persistDraft = hasPersistedDraftRef.current ? saveDraft : createDraft
+      const draft = await persistDraft(agentId, {
         manifest: reviewDraft.manifest,
         approvedManifest: manifest,
         description: sourceDescription,
@@ -592,6 +634,8 @@ export default function BuilderPage() {
         editorState: reviewDraft,
       })
       lastSavedSnapshotRef.current = snapshot
+      hasPersistedDraftRef.current = true
+      setHasPersistedDraft(true)
       setDraftAgentId(agentId)
       setDraftRevision(draft.revision)
       setSavedVersion(draft.published_version ?? null)
@@ -641,6 +685,36 @@ export default function BuilderPage() {
               <span className="section-kicker">Prompt</span>
               <h2>What does your agent do?</h2>
             </div>
+            <div className="editor-agent-name">
+              <label htmlFor="agent-display-name">Agent name</label>
+              <input
+                id="agent-display-name"
+                className="form-control"
+                value={presentation.display_name}
+                onChange={(event) => setPresentation((current) => ({
+                  ...current,
+                  display_name: event.target.value,
+                }))}
+                placeholder="e.g. AI Travel Planner"
+                maxLength={80}
+                required={requiresNewAgentName}
+                disabled={
+                  loading
+                  || loadingSaved
+                  || Boolean(draftAgentId && !hasPersistedDraft)
+                }
+                aria-describedby="agent-id-preview"
+              />
+              <div id="agent-id-preview" className="screen-id-preview" aria-live="polite">
+                <span>Screen ID</span>
+                <code>{agentIdPreview || 'Enter a name with letters or numbers'}</code>
+                <small>
+                  {draftAgentId || screenId
+                    ? 'Fixed for this screen; changing the name will not change its ID.'
+                    : 'Created from the agent name when inputs are generated.'}
+                </small>
+              </div>
+            </div>
             <label htmlFor="description">Describe your agent</label>
             <textarea
               id="description"
@@ -674,7 +748,7 @@ export default function BuilderPage() {
               className="btn btn-primary btn-generate"
               aria-label={editing ? 'Regenerate inputs' : 'Generate'}
               onClick={handleGenerate}
-              disabled={loading || loadingSaved || !description.trim()}
+              disabled={loading || loadingSaved || !canGenerate}
             >
               {loading && <span className="button-spinner" aria-hidden="true" />}
               <span>{loading ? 'Generating...' : editing ? 'Regenerate inputs' : 'Generate inputs'}</span>

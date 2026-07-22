@@ -149,6 +149,28 @@ def test_autosave_updates_one_mutable_document(monkeypatch):
     assert db.get_manifest("research-agent") is None
 
 
+def test_first_draft_insert_is_atomic_and_never_overwrites(monkeypatch):
+    collection = MemoryCollection()
+    monkeypatch.setattr(db, "_collection", collection)
+    values = {
+        "agent_id": "research-agent",
+        "draft_manifest": valid_manifest(),
+        "description": "Research assistant",
+        "name": "Research Agent",
+        "source": "llm",
+        "presentation": {"display_name": "Research Agent"},
+        "editor_state": {},
+        "validation_errors": [],
+    }
+
+    first = db.insert_draft(**values)
+    with pytest.raises(DuplicateKeyError):
+        db.insert_draft(**{**values, "name": "Replacement Agent"})
+
+    assert first["name"] == "Research Agent"
+    assert db.get_draft("research-agent")["name"] == "Research Agent"
+
+
 def test_publish_is_idempotent_and_older_versions_remain_loadable(monkeypatch):
     collection = MemoryCollection()
     monkeypatch.setattr(db, "_collection", collection)
@@ -174,6 +196,7 @@ def test_publish_is_idempotent_and_older_versions_remain_loadable(monkeypatch):
 
 def test_invalid_editor_draft_can_autosave(monkeypatch):
     captured = {}
+    monkeypatch.setattr(main, "screen_exists", lambda _agent_id: True)
 
     def fake_save_draft(**kwargs):
         captured.update(kwargs)
@@ -192,6 +215,104 @@ def test_invalid_editor_draft_can_autosave(monkeypatch):
 
     assert result["status"] == "draft"
     assert captured["validation_errors"]
+
+
+def test_draft_update_cannot_create_a_missing_identity(monkeypatch):
+    monkeypatch.setattr(main, "screen_exists", lambda _agent_id: False)
+    monkeypatch.setattr(
+        main,
+        "save_draft",
+        lambda **_kwargs: pytest.fail("PUT must not create a missing screen"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.put_screen_draft(
+            "missing-agent",
+            SaveDraftRequest(manifest=valid_manifest(), name="Missing Agent"),
+        )
+
+    assert raised.value.status_code == 404
+    assert "first draft with POST" in raised.value.detail
+
+
+def test_first_draft_creation_requires_name_to_match_agent_id(monkeypatch):
+    request = SaveDraftRequest(
+        manifest=valid_manifest(),
+        name="Research Agent",
+    )
+    monkeypatch.setattr(main, "screen_exists", lambda _agent_id: False)
+
+    with pytest.raises(HTTPException) as raised:
+        main.create_screen_draft("different-agent", request)
+
+    assert raised.value.status_code == 422
+    assert "derived from the supplied screen name" in raised.value.detail
+
+
+def test_first_draft_creation_rejects_an_existing_identity(monkeypatch):
+    request = SaveDraftRequest(
+        manifest=valid_manifest(),
+        name="Research Agent",
+    )
+    monkeypatch.setattr(main, "screen_exists", lambda agent_id: agent_id == "research-agent")
+    monkeypatch.setattr(
+        main,
+        "insert_draft",
+        lambda **_kwargs: pytest.fail("existing draft must not be overwritten"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.create_screen_draft("research-agent", request)
+
+    assert raised.value.status_code == 409
+    assert "already exists" in raised.value.detail
+
+
+def test_first_draft_creation_uses_the_shared_draft_validation_path(monkeypatch):
+    captured = {}
+    request = SaveDraftRequest(
+        manifest=valid_manifest(),
+        description="Research assistant",
+        name="Research Agent",
+        presentation={"display_name": "Research Agent"},
+    )
+    monkeypatch.setattr(main, "screen_exists", lambda _agent_id: False)
+
+    def fake_save_draft(**kwargs):
+        captured.update(kwargs)
+        return {
+            "agent_id": kwargs["agent_id"],
+            "status": "draft",
+            "revision": "created-revision",
+        }
+
+    monkeypatch.setattr(main, "insert_draft", fake_save_draft)
+
+    result = main.create_screen_draft("research-agent", request)
+
+    assert result["revision"] == "created-revision"
+    assert captured["agent_id"] == "research-agent"
+    assert captured["name"] == "Research Agent"
+    assert captured["validation_errors"] == []
+
+
+def test_concurrent_first_draft_collision_returns_conflict(monkeypatch):
+    request = SaveDraftRequest(
+        manifest=valid_manifest(),
+        name="Research Agent",
+    )
+    monkeypatch.setattr(main, "screen_exists", lambda _agent_id: False)
+    monkeypatch.setattr(
+        main,
+        "insert_draft",
+        lambda **_kwargs: (_ for _ in ()).throw(DuplicateKeyError("duplicate")),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.create_screen_draft("research-agent", request)
+
+    assert raised.value.status_code == 409
+    assert "already exists" in raised.value.detail
 
 
 def test_invalid_draft_cannot_be_published(monkeypatch):

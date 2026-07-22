@@ -415,7 +415,7 @@ def generate_schema(description: str) -> dict:
     for attempt in range(1, _MAX_GENERATION_ATTEMPTS + 1):
         try:
             raw = _completion_response(description, messages, attempt)
-            # print(raw)
+            print(raw)
         except LLMConfigurationError:
             raise
         except (LiteLLMTimeout, TimeoutError) as exc:
