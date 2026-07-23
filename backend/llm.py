@@ -4,7 +4,11 @@ Turns a plain-text agent description into a manifest of the form:
 
     {
         "input_schema": {...},
-        "ui_hints": {"mode": "single" | "wizard", "field_order": [...]},
+        "ui_hints": {
+            "mode": "single" | "wizard",
+            "field_order": [...],
+            "blocks": [...],
+        },
     }
 
 No UI, no web route -- just the core transformation (Step 2).
@@ -48,7 +52,7 @@ _MAX_GENERATION_ATTEMPTS = 2
 _MAX_RETRY_OUTPUT_CHARS = 12_000
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 _router: Router | None = None
 
@@ -73,13 +77,14 @@ You convert a plain-text description of an AI agent into the specification
 of an input form for that agent.
 
 From the description, decide which inputs must be collected from the user,
-then return exactly one JSON object. For a single-screen form, use this shape:
+then design a clear, safe layout and return exactly one JSON object. For a
+single-screen form, use this shape:
 
-{"input_schema": { ... }, "ui_hints": {"mode": "single", "field_order": [ ... ]}}
+{"input_schema": { ... }, "ui_hints": {"mode": "single", "field_order": [ ... ], "blocks": [ ... ]}}
 
 For a multi-screen wizard, use this shape:
 
-{"input_schema": { ... }, "ui_hints": {"mode": "wizard", "field_order": [ ... ], "groups": [{"id": "group-id", "title": "Group title", "description": "What this step collects", "fields": [ ... ]}]}}
+{"input_schema": { ... }, "ui_hints": {"mode": "wizard", "field_order": [ ... ], "groups": [{"id": "group-id", "title": "Group title", "description": "What this step collects", "fields": [ ... ], "blocks": [ ... ]}]}}
 
 Rules:
 - "input_schema" must be a valid JSON Schema (draft 2020-12) with
@@ -103,6 +108,21 @@ Rules:
 - List a field in "required" only if the agent cannot work without it.
 - "ui_hints.field_order" must contain every key of "properties" exactly
   once, in a sensible display order.
+- Build the visual experience only from these safe block objects:
+  * {"id":"unique-id","type":"field","field":"property_name"}
+  * {"id":"unique-id","type":"heading","text":"Helpful heading","level":2}
+  * {"id":"unique-id","type":"paragraph","text":"Helpful plain text"}
+  * {"id":"unique-id","type":"divider"}
+  * {"id":"unique-id","type":"callout","text":"Important plain text","tone":"information"}
+  * {"id":"unique-id","type":"section","title":"Section title","description":"Optional explanation","children":[ ...non-section blocks... ]}
+- Block IDs must be unique lowercase kebab-case identifiers no longer than 64
+  characters. Heading levels may be only 2, 3, or 4. Callout tone may be only
+  "information", "success", or "warning".
+- Every input property must appear in exactly one field block. Field blocks
+  must appear in the same visual order as "ui_hints.field_order".
+- Use headings, paragraphs, sections, dividers, and callouts only when they
+  materially improve comprehension. Keep copy concise. Do not emit empty
+  decorative sections or put a section inside another section.
 - Choose "single" for a short, coherent form with six or fewer simple fields.
 - Choose "wizard" when there are more than six fields OR when the inputs form
   two or more clearly distinct sections and separating them would materially
@@ -113,7 +133,10 @@ Rules:
   "title", a one-sentence "description", and a non-empty "fields" array.
 - In wizard mode, every property must occur in exactly one group. Concatenating
   the groups' "fields" arrays must exactly equal "ui_hints.field_order".
-- In single mode, omit "groups".
+- In wizard mode, put each step's blocks in that group's "blocks" array and
+  omit top-level "ui_hints.blocks". Each group's field-block order must exactly
+  equal its "fields" array.
+- In single mode, put all blocks in "ui_hints.blocks" and omit "groups".
 - Return strict JSON only: no prose, no explanations, no markdown fences.
 """.replace("{max_fields}", str(MAX_INPUT_FIELDS))
 
@@ -295,8 +318,26 @@ def _loads_llm_json(raw: str):
         return repaired
 
 
+def _is_gemini_model(model: str) -> bool:
+    """Return whether a LiteLLM model identifier belongs to Gemini."""
+    return "gemini" in model.strip().lower()
+
+
 def _response_format_for_model(model: str) -> dict:
-    """Use schema-constrained output only when LiteLLM declares support."""
+    """Choose a provider-compatible JSON response mode.
+
+    Gemini supports JSON output, but its structured-output implementation
+    rejects parts of the application's full draft-2020-12 meta-schema. The
+    backend remains the authoritative schema and safety validation gate.
+    """
+    if _is_gemini_model(model):
+        logger.info(
+            "Using JSON-object response mode for Gemini model %s; "
+            "backend manifest validation remains authoritative.",
+            model,
+        )
+        return {"type": "json_object"}
+
     try:
         schema_supported = supports_response_schema(model=model)
     except Exception:  # Defensive: capability detection must not block fallback.
@@ -306,7 +347,13 @@ def _response_format_for_model(model: str) -> dict:
             model,
         )
     if not schema_supported:
+        logger.info(
+            "Using JSON-object response mode for model %s; "
+            "response-schema support is unavailable.",
+            model,
+        )
         return {"type": "json_object"}
+    logger.info("Using strict JSON-schema response mode for model %s.", model)
     return {
         "type": "json_schema",
         "json_schema": {

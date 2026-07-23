@@ -8,8 +8,10 @@ Cross-field and security checks that are clearer in Python live in
 """
 
 MAX_INPUT_FIELDS = 30
+MAX_LAYOUT_BLOCKS = 100
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+BLOCK_ID_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 SUPPORTED_FIELD_TYPES = ["string", "number", "integer", "boolean"]
 SUPPORTED_STRING_FORMATS = [
     "email",
@@ -54,6 +56,122 @@ FIELD_SCHEMA = {
     "additionalProperties": False,
 }
 
+_BLOCK_ID = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 64,
+    "pattern": BLOCK_ID_PATTERN,
+}
+
+FIELD_BLOCK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": _BLOCK_ID,
+        "type": {"const": "field"},
+        "field": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": FIELD_NAME_PATTERN,
+        },
+    },
+    "required": ["id", "type", "field"],
+    "additionalProperties": False,
+}
+
+HEADING_BLOCK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": _BLOCK_ID,
+        "type": {"const": "heading"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 120},
+        "level": {"type": "integer", "enum": [2, 3, 4]},
+    },
+    "required": ["id", "type", "text", "level"],
+    "additionalProperties": False,
+}
+
+PARAGRAPH_BLOCK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": _BLOCK_ID,
+        "type": {"const": "paragraph"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1_000},
+    },
+    "required": ["id", "type", "text"],
+    "additionalProperties": False,
+}
+
+DIVIDER_BLOCK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": _BLOCK_ID,
+        "type": {"const": "divider"},
+    },
+    "required": ["id", "type"],
+    "additionalProperties": False,
+}
+
+CALLOUT_BLOCK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": _BLOCK_ID,
+        "type": {"const": "callout"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1_000},
+        "tone": {
+            "type": "string",
+            "enum": ["information", "success", "warning"],
+        },
+    },
+    "required": ["id", "type", "text", "tone"],
+    "additionalProperties": False,
+}
+
+NON_SECTION_BLOCK_SCHEMA = {
+    "oneOf": [
+        FIELD_BLOCK_SCHEMA,
+        HEADING_BLOCK_SCHEMA,
+        PARAGRAPH_BLOCK_SCHEMA,
+        DIVIDER_BLOCK_SCHEMA,
+        CALLOUT_BLOCK_SCHEMA,
+    ]
+}
+
+SECTION_BLOCK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": _BLOCK_ID,
+        "type": {"const": "section"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+        "description": {"type": "string", "minLength": 1, "maxLength": 240},
+        "children": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_LAYOUT_BLOCKS,
+            "items": NON_SECTION_BLOCK_SCHEMA,
+        },
+    },
+    "required": ["id", "type", "title", "children"],
+    "additionalProperties": False,
+}
+
+LAYOUT_BLOCK_SCHEMA = {
+    "oneOf": [
+        FIELD_BLOCK_SCHEMA,
+        HEADING_BLOCK_SCHEMA,
+        PARAGRAPH_BLOCK_SCHEMA,
+        DIVIDER_BLOCK_SCHEMA,
+        CALLOUT_BLOCK_SCHEMA,
+        SECTION_BLOCK_SCHEMA,
+    ]
+}
+
+LAYOUT_BLOCKS_SCHEMA = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": MAX_LAYOUT_BLOCKS,
+    "items": LAYOUT_BLOCK_SCHEMA,
+}
+
 META_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -94,6 +212,8 @@ META_SCHEMA = {
                     "maxItems": MAX_INPUT_FIELDS,
                     "items": {"type": "string"},
                 },
+                # Required semantically for single-screen manifests.
+                "blocks": LAYOUT_BLOCKS_SCHEMA,
                 # Required semantically when mode == "wizard". It remains
                 # optional structurally because single-screen manifests omit it.
                 "groups": {
@@ -124,8 +244,14 @@ META_SCHEMA = {
                                 "minItems": 1,
                                 "maxItems": MAX_INPUT_FIELDS,
                             },
+                            "blocks": LAYOUT_BLOCKS_SCHEMA,
                         },
-                        "required": ["id", "title", "description", "fields"],
+                        "required": [
+                            "id",
+                            "title",
+                            "description",
+                            "fields",
+                        ],
                         "additionalProperties": False,
                     },
                 },

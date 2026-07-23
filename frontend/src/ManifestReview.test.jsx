@@ -43,7 +43,8 @@ const wizardManifest = {
 }
 
 function ReviewHarness({ onContinue = () => {}, initialManifest = manifest }) {
-  const [draft, setDraft] = useState(() => createReviewDraft(initialManifest))
+  const [draft, setDraft] = useState(() =>
+    createReviewDraft(initialManifest, { layoutApproved: true }))
   return (
     <ManifestReview
       draft={draft}

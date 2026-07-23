@@ -20,6 +20,15 @@ SINGLE_MANIFEST = {
     "ui_hints": {
         "mode": "single",
         "field_order": ["topic"],
+        "blocks": [
+            {
+                "id": "research-heading",
+                "type": "heading",
+                "text": "Research request",
+                "level": 2,
+            },
+            {"id": "field-topic", "type": "field", "field": "topic"},
+        ],
     },
 }
 
@@ -74,6 +83,9 @@ def test_prompt_defines_single_and_wizard_contracts():
     assert "Never emit $ref" in llm.SYSTEM_PROMPT
     assert "Never invent" in llm.SYSTEM_PROMPT
     assert "permissions" in llm.SYSTEM_PROMPT
+    assert '"type":"section"' in llm.SYSTEM_PROMPT
+    assert "Every input property must appear in exactly one field block" in llm.SYSTEM_PROMPT
+    assert "put each step's blocks in that group's" in llm.SYSTEM_PROMPT
 
 
 def test_generate_schema_uses_layout_prompt_and_parses_json(monkeypatch):
@@ -103,8 +115,11 @@ def test_generate_schema_uses_layout_prompt_and_parses_json(monkeypatch):
     assert captured["timeout"] == 45.0
 
 
-def test_generate_schema_uses_json_schema_when_model_supports_it(monkeypatch):
+def test_generate_schema_uses_json_schema_when_non_gemini_model_supports_it(
+    monkeypatch,
+):
     configure_vertex(monkeypatch)
+    monkeypatch.setenv("MODEL", "openai/gpt-test")
     monkeypatch.setattr(llm, "supports_response_schema", lambda **_: True)
     captured = {}
 
@@ -123,6 +138,31 @@ def test_generate_schema_uses_json_schema_when_model_supports_it(monkeypatch):
             "schema": llm.META_SCHEMA,
         },
     }
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini/gemini-3.5-flash",
+        "vertex_ai/gemini-3.5-flash",
+        "openai/gemini-proxy",
+        "gemini-test",
+    ],
+)
+def test_gemini_always_uses_json_object_mode(monkeypatch, caplog, model):
+    monkeypatch.setattr(
+        llm,
+        "supports_response_schema",
+        lambda **_: pytest.fail(
+            "Gemini must bypass the provider's incomplete schema capability check"
+        ),
+    )
+
+    with caplog.at_level("INFO"):
+        response_format = llm._response_format_for_model(model)
+
+    assert response_format == {"type": "json_object"}
+    assert "backend manifest validation remains authoritative" in caplog.text
 
 
 def test_generate_schema_uses_configured_timeout(monkeypatch):
@@ -268,7 +308,7 @@ def test_gateway_completion_is_traced_when_langfuse_is_configured(monkeypatch):
         "as_type": "generation",
         "model": "gemini-test",
         "input": "a traced agent",
-        "metadata": {"prompt_version": "2", "attempt": 1},
+        "metadata": {"prompt_version": "3", "attempt": 1},
     }
     assert captured["update"]["output"] == json.dumps(SINGLE_MANIFEST)
     assert captured["update"]["usage_details"] == {"input": 100, "output": 50}

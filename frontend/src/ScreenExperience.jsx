@@ -1,5 +1,6 @@
 import { Suspense, lazy } from 'react'
 import { isWizardManifest, toUiSchema } from './manifestLayout.js'
+import { normalizeLayoutBlocks } from './layoutBlocks.js'
 import { normalizePresentation, presentationStyle } from './presentation.js'
 import { AgentGlyph, WorkspaceLoading } from './StudioShell.jsx'
 
@@ -15,8 +16,11 @@ export default function ScreenExperience({
   description = '',
   agentName = '',
   interactive = true,
+  activeGroupId,
+  onActiveGroupChange,
 }) {
-  const wizardMode = isWizardManifest(manifest)
+  const safeManifest = normalizeLayoutBlocks(manifest)
+  const wizardMode = isWizardManifest(safeManifest)
   const identity = normalizePresentation(presentation, {
     name: agentName,
     description,
@@ -38,17 +42,20 @@ export default function ScreenExperience({
         {wizardMode ? (
           <Wizard
             key={formKey}
-            manifest={manifest}
+            manifest={safeManifest}
             onSubmit={onSubmit}
             disabled={!interactive}
             showSummary={identity.show_summary}
             submitLabel={identity.submit_label}
+            activeGroupId={activeGroupId}
+            onActiveGroupChange={onActiveGroupChange}
           />
         ) : (
           <FormRenderer
             key={formKey}
-            schema={manifest.input_schema}
-            uiSchema={toUiSchema(manifest)}
+            schema={safeManifest.input_schema}
+            uiSchema={toUiSchema(safeManifest)}
+            blocks={safeManifest.ui_hints.blocks}
             onSubmit={onSubmit}
             disabled={!interactive}
             submitLabel={identity.submit_label}

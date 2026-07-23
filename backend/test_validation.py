@@ -30,6 +30,17 @@ GOOD_MANIFEST = {
     "ui_hints": {
         "mode": "single",
         "field_order": ["to", "subject", "body"],
+        "blocks": [
+            {"id": "intro", "type": "heading", "text": "Write an email", "level": 2},
+            {
+                "id": "intro-copy",
+                "type": "paragraph",
+                "text": "Provide the message details below.",
+            },
+            {"id": "field-to", "type": "field", "field": "to"},
+            {"id": "field-subject", "type": "field", "field": "subject"},
+            {"id": "field-body", "type": "field", "field": "body"},
+        ],
     },
 }
 
@@ -45,12 +56,19 @@ def wizard_manifest() -> dict:
                 "title": "Recipient",
                 "description": "Choose who should receive the email.",
                 "fields": ["to"],
+                "blocks": [
+                    {"id": "field-to", "type": "field", "field": "to"},
+                ],
             },
             {
                 "id": "message",
                 "title": "Message",
                 "description": "Write the subject and message body.",
                 "fields": ["subject", "body"],
+                "blocks": [
+                    {"id": "field-subject", "type": "field", "field": "subject"},
+                    {"id": "field-body", "type": "field", "field": "body"},
+                ],
             },
         ],
     }
@@ -246,6 +264,210 @@ def test_valid_groups_pass():
     assert ok, f"expected valid, got: {errors}"
 
 
+def test_all_supported_layout_blocks_pass():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"]["blocks"] = [
+        {
+            "id": "message-heading",
+            "type": "heading",
+            "text": "Compose an email",
+            "level": 2,
+        },
+        {
+            "id": "message-copy",
+            "type": "paragraph",
+            "text": "Add the recipient and message details.",
+        },
+        {"id": "field-to", "type": "field", "field": "to"},
+        {"id": "message-divider", "type": "divider"},
+        {
+            "id": "message-section",
+            "type": "section",
+            "title": "Message",
+            "description": "Write the content to send.",
+            "children": [
+                {"id": "field-subject", "type": "field", "field": "subject"},
+                {
+                    "id": "message-callout",
+                    "type": "callout",
+                    "text": "Review sensitive details before submitting.",
+                    "tone": "warning",
+                },
+                {"id": "field-body", "type": "field", "field": "body"},
+            ],
+        },
+    ]
+
+    ok, errors = validate_manifest(manifest)
+
+    assert ok, f"expected valid, got: {errors}"
+
+
+def test_unknown_or_nested_layout_blocks_are_rejected():
+    for invalid_block in (
+        {"id": "custom", "type": "html", "text": "Unsafe"},
+        {
+            "id": "outer",
+            "type": "section",
+            "title": "Outer",
+            "children": [
+                {
+                    "id": "inner",
+                    "type": "section",
+                    "title": "Inner",
+                    "children": [
+                        {"id": "field-to", "type": "field", "field": "to"}
+                    ],
+                }
+            ],
+        },
+    ):
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["ui_hints"]["blocks"] = [invalid_block]
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any("structural" in error for error in errors)
+
+
+def test_layout_rejects_duplicate_ids_fields_and_unknown_references():
+    cases = (
+        (
+            [
+                {"id": "duplicate", "type": "field", "field": "to"},
+                {"id": "duplicate", "type": "field", "field": "subject"},
+                {"id": "field-body", "type": "field", "field": "body"},
+            ],
+            "block id 'duplicate'",
+        ),
+        (
+            [
+                {"id": "field-to", "type": "field", "field": "to"},
+                {"id": "field-to-again", "type": "field", "field": "to"},
+                {"id": "field-body", "type": "field", "field": "body"},
+            ],
+            "more than one field block",
+        ),
+        (
+            [
+                {"id": "field-to", "type": "field", "field": "to"},
+                {"id": "field-subject", "type": "field", "field": "subject"},
+                {"id": "field-unknown", "type": "field", "field": "unknown"},
+            ],
+            "references unknown input",
+        ),
+    )
+    for blocks, expected in cases:
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["ui_hints"]["blocks"] = blocks
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any(expected in error for error in errors)
+
+
+def test_layout_field_order_must_match_canonical_order():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"]["blocks"] = [
+        {"id": "field-subject", "type": "field", "field": "subject"},
+        {"id": "field-to", "type": "field", "field": "to"},
+        {"id": "field-body", "type": "field", "field": "body"},
+    ]
+
+    ok, errors = validate_manifest(manifest)
+
+    assert not ok
+    assert any("field-block order" in error for error in errors)
+
+
+def test_layout_text_rejects_html_and_script_directives():
+    for unsafe_text in ("<strong>Unsafe</strong>", "onclick=steal()"):
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["ui_hints"]["blocks"][0]["text"] = unsafe_text
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any("safety" in error for error in errors)
+
+
+def test_layout_block_ids_and_properties_are_strict():
+    invalid_blocks = (
+        {"id": "Not Safe", "type": "divider"},
+        {"id": f"a{'b' * 64}", "type": "divider"},
+        {"id": "extra-setting", "type": "divider", "className": "wide"},
+        {
+            "id": "bad-level",
+            "type": "heading",
+            "text": "Heading",
+            "level": 1,
+        },
+        {
+            "id": "bad-tone",
+            "type": "callout",
+            "text": "Callout",
+            "tone": "danger",
+        },
+    )
+
+    for invalid_block in invalid_blocks:
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["ui_hints"]["blocks"].insert(0, invalid_block)
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any("structural" in error for error in errors)
+
+
+def test_layout_text_limits_are_enforced():
+    invalid_blocks = (
+        {
+            "id": "long-heading",
+            "type": "heading",
+            "text": "h" * 121,
+            "level": 2,
+        },
+        {"id": "long-paragraph", "type": "paragraph", "text": "p" * 1_001},
+        {
+            "id": "long-callout",
+            "type": "callout",
+            "text": "c" * 1_001,
+            "tone": "information",
+        },
+        {
+            "id": "long-section-title",
+            "type": "section",
+            "title": "s" * 81,
+            "children": [{"id": "section-copy", "type": "paragraph", "text": "Copy"}],
+        },
+        {
+            "id": "long-section-description",
+            "type": "section",
+            "title": "Section",
+            "description": "d" * 241,
+            "children": [{"id": "section-note", "type": "paragraph", "text": "Note"}],
+        },
+    )
+
+    for invalid_block in invalid_blocks:
+        manifest = copy.deepcopy(GOOD_MANIFEST)
+        manifest["ui_hints"]["blocks"].insert(0, invalid_block)
+        ok, errors = validate_manifest(manifest)
+        assert not ok
+        assert any("structural" in error for error in errors)
+
+
+def test_layout_rejects_more_than_one_hundred_blocks():
+    manifest = copy.deepcopy(GOOD_MANIFEST)
+    manifest["ui_hints"]["blocks"] = [
+        {"id": f"divider-{index}", "type": "divider"} for index in range(98)
+    ] + [
+        {"id": "field-to", "type": "field", "field": "to"},
+        {"id": "field-subject", "type": "field", "field": "subject"},
+        {"id": "field-body", "type": "field", "field": "body"},
+    ]
+
+    ok, errors = validate_manifest(manifest)
+
+    assert not ok
+    assert any("too long" in error or "at most" in error for error in errors)
+
+
 def test_single_mode_rejects_groups():
     manifest = copy.deepcopy(GOOD_MANIFEST)
     manifest["ui_hints"]["groups"] = wizard_manifest()["ui_hints"]["groups"]
@@ -260,6 +482,20 @@ def test_wizard_mode_requires_groups():
     ok, errors = validate_manifest(manifest)
     assert not ok
     assert any("groups is required" in error for error in errors)
+
+
+def test_wizard_requires_group_blocks_and_rejects_top_level_blocks():
+    manifest = wizard_manifest()
+    del manifest["ui_hints"]["groups"][0]["blocks"]
+    manifest["ui_hints"]["blocks"] = [
+        {"id": "field-to-top", "type": "field", "field": "to"}
+    ]
+
+    ok, errors = validate_manifest(manifest)
+
+    assert not ok
+    assert any("groups[0].blocks is required" in error for error in errors)
+    assert any("ui_hints.blocks must be omitted" in error for error in errors)
 
 
 def test_wizard_mode_requires_at_least_two_groups():
@@ -451,7 +687,7 @@ def test_generation_metadata_records_model_and_prompt_version():
     assert metadata == {
         "provider": "litellm_gateway",
         "model": "gemini/gemini-3.5-flash",
-        "prompt_version": "2",
+        "prompt_version": "3",
     }
 
 

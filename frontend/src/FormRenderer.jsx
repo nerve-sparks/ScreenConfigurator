@@ -1,5 +1,19 @@
 import Form from '@rjsf/bootstrap-4'
 import validator from '@rjsf/validator-ajv8'
+import { LayoutObjectFieldTemplate } from './LayoutRenderer.jsx'
+
+function RootLayoutTemplate(props) {
+  return (
+    <LayoutObjectFieldTemplate
+      {...props}
+      blocks={props.registry?.formContext?.layoutBlocks ?? []}
+    />
+  )
+}
+
+const FORM_TEMPLATES = {
+  ObjectFieldTemplate: RootLayoutTemplate,
+}
 
 function FileWidget({
   id,
@@ -63,6 +77,7 @@ export default function FormRenderer({
   children,
   disabled = false,
   submitLabel = 'Submit',
+  blocks = [],
 }) {
   const handleSubmit = ({ formData: data }) => {
     if (onSubmit) {
@@ -85,6 +100,8 @@ export default function FormRenderer({
         onSubmit={handleSubmit}
         disabled={disabled}
         widgets={{ FileWidget }}
+        templates={FORM_TEMPLATES}
+        formContext={{ layoutBlocks: blocks }}
       >
         {children ?? (
           <button type="submit" className="btn btn-primary agent-submit-button">

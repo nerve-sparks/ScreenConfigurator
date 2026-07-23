@@ -15,6 +15,7 @@ import {
   buildApprovedManifest,
   canContinueReview,
   createReviewDraft,
+  normalizeReviewDraft,
   orderedReviewFields,
   reviewProgress,
   setFieldRequired,
@@ -32,6 +33,7 @@ import ScreenExperience from './ScreenExperience.jsx'
 import { AgentGlyph, SparkIcon, WorkspaceLoading } from './StudioShell.jsx'
 
 const ManifestReview = lazy(() => import('./ManifestReview.jsx'))
+const LayoutEditor = lazy(() => import('./LayoutEditor.jsx'))
 
 const AGENT_EXAMPLES = [
   {
@@ -292,7 +294,7 @@ export default function BuilderPage() {
     () => ({
       description: resumed?.description ?? '',
       sourceDescription: resumed?.sourceDescription ?? resumed?.description ?? '',
-      reviewDraft: resumed?.reviewDraft ?? null,
+      reviewDraft: normalizeReviewDraft(resumed?.reviewDraft) ?? null,
       presentation: normalizePresentation(resumed?.presentation, {
         name: screenId ?? '',
         description: resumed?.description ?? '',
@@ -318,6 +320,7 @@ export default function BuilderPage() {
     initialState.draftRevision ? 'Draft saved' : 'Draft not saved',
   )
   const [selectedFieldName, setSelectedFieldName] = useState(null)
+  const [activeWizardGroupId, setActiveWizardGroupId] = useState(null)
   const [device, setDevice] = useState('desktop')
   const [loading, setLoading] = useState(false)
   const [loadingSaved, setLoadingSaved] = useState(editing && !resumed)
@@ -334,6 +337,14 @@ export default function BuilderPage() {
   const reviewedCount = progress.approved + progress.rejected
   const progressPercent = progress.total ? Math.round((reviewedCount / progress.total) * 100) : 0
   const wizardMode = Boolean(reviewDraft && isWizardManifest(reviewDraft.manifest))
+  const wizardGroupIds = useMemo(
+    () => (
+      wizardMode
+        ? (reviewDraft.manifest.ui_hints.groups ?? []).map((group) => group.id)
+        : []
+    ),
+    [reviewDraft, wizardMode],
+  )
   const projectTitle = presentation.display_name || draftAgentId || screenId || 'Untitled agent'
   const proposedAgentId = screenIdFrom(presentation.display_name)
   const agentIdPreview = draftAgentId ?? screenId ?? proposedAgentId
@@ -353,10 +364,17 @@ export default function BuilderPage() {
   }, [fields, selectedFieldName])
 
   useEffect(() => {
+    setActiveWizardGroupId((current) => (
+      wizardGroupIds.includes(current) ? current : wizardGroupIds[0] ?? null
+    ))
+  }, [wizardGroupIds])
+
+  useEffect(() => {
     if (resumed) {
+      const resumedReview = normalizeReviewDraft(resumed.reviewDraft) ?? null
       setDescription(resumed.description ?? '')
       setSourceDescription(resumed.sourceDescription ?? resumed.description ?? '')
-      setReviewDraft(resumed.reviewDraft ?? null)
+      setReviewDraft(resumedReview)
       setPresentation(normalizePresentation(resumed.presentation, {
         name: screenId ?? '',
         description: resumed.description ?? '',
@@ -368,15 +386,15 @@ export default function BuilderPage() {
       const resumedDraftIsPersisted = Boolean(screenId || resumed.draftRevision)
       hasPersistedDraftRef.current = resumedDraftIsPersisted
       setHasPersistedDraft(resumedDraftIsPersisted)
-      lastSavedSnapshotRef.current = resumed.reviewDraft
+      lastSavedSnapshotRef.current = resumedReview
         ? draftSnapshot({
-            manifest: resumed.reviewDraft.manifest,
+            manifest: resumedReview.manifest,
             description: resumed.sourceDescription ?? resumed.description ?? '',
             presentation: normalizePresentation(resumed.presentation, {
               name: screenId ?? '',
               description: resumed.description ?? '',
             }),
-            editorState: resumed.reviewDraft,
+            editorState: resumedReview,
           })
         : null
       setLoadingSaved(false)
@@ -413,8 +431,8 @@ export default function BuilderPage() {
           throw new Error('Saved draft is missing its manifest.')
         }
         const restoredReview = draft.editor_state?.manifest?.input_schema
-          ? draft.editor_state
-          : createReviewDraft(draft.draft_manifest)
+          ? normalizeReviewDraft(draft.editor_state)
+          : createReviewDraft(draft.draft_manifest, { layoutApproved: true })
         const restoredPresentation = normalizePresentation(draft.presentation, {
           name: draft.name || draft.agent_id,
           description: draft.description ?? '',
@@ -514,7 +532,7 @@ export default function BuilderPage() {
         name: screenId ?? '',
         description: cleanDescription,
       }))
-      setNotice('AI suggestions are ready. Review every field before previewing.')
+      setNotice('AI suggestions are ready. Review every field and approve the content layout before previewing.')
     } catch (err) {
       setReviewDraft(null)
       setError(err.message)
@@ -677,7 +695,8 @@ export default function BuilderPage() {
             <a href="#agent-brief"><span>01</span><div><strong>Agent brief</strong><small>Describe the job</small></div></a>
             <a href="#preview-canvas"><span>02</span><div><strong>Live canvas</strong><small>Check the experience</small></div></a>
             <a href="#input-fields"><span>03</span><div><strong>Input fields</strong><small>Human approval</small></div></a>
-            <a href="#appearance"><span>04</span><div><strong>Appearance</strong><small>Brand the screen</small></div></a>
+            <a href="#content-layout"><span>04</span><div><strong>Content &amp; layout</strong><small>Arrange the screen</small></div></a>
+            <a href="#appearance"><span>05</span><div><strong>Appearance</strong><small>Brand the screen</small></div></a>
           </nav>
 
           <section id="agent-brief" className="editor-prompt-panel" aria-label="Agent configuration">
@@ -813,6 +832,8 @@ export default function BuilderPage() {
                         description={sourceDescription || description}
                         agentName={screenId ?? ''}
                         interactive={false}
+                        activeGroupId={activeWizardGroupId}
+                        onActiveGroupChange={setActiveWizardGroupId}
                       />
                     ) : (
                       <EditorEmptyState loading={loadingSaved} />
@@ -845,6 +866,18 @@ export default function BuilderPage() {
                   </div>
                 )}
               </section>
+
+              {reviewDraft && (
+                <Suspense fallback={<WorkspaceLoading message="Opening layout editor..." />}>
+                  <LayoutEditor
+                    draft={reviewDraft}
+                    onChange={setReviewDraft}
+                    disabled={loadingSaved || validatingReview}
+                    activeGroupId={activeWizardGroupId}
+                    onActiveGroupChange={setActiveWizardGroupId}
+                  />
+                </Suspense>
+              )}
             </div>
 
             <AppearanceInspector

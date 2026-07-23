@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   REVIEW_STATUS,
+  addContentBlock,
   addHumanField,
   approveAllFields,
+  approveLayout,
   buildApprovedManifest,
   canContinueReview,
   createReviewDraft,
@@ -121,11 +123,13 @@ describe('review draft lifecycle', () => {
 
     draft = setFieldStatus(draft, 'body', REVIEW_STATUS.REJECTED)
     draft = setFieldStatus(draft, 'send_at', REVIEW_STATUS.REJECTED)
+    expect(canContinueReview(draft)).toBe(false)
+    draft = approveLayout(draft)
     expect(canContinueReview(draft)).toBe(true)
   })
 
   it('removes rejected fields from schema, required, order, and groups', () => {
-    let draft = approveAllFields(createReviewDraft(wizardManifest))
+    let draft = approveLayout(approveAllFields(createReviewDraft(wizardManifest)))
     draft = setFieldStatus(draft, 'subject', REVIEW_STATUS.REJECTED)
     const approved = buildApprovedManifest(draft)
 
@@ -144,7 +148,7 @@ describe('review draft lifecycle', () => {
   })
 
   it('converts a wizard to a single screen when fewer than two groups remain', () => {
-    let draft = approveAllFields(createReviewDraft(wizardManifest))
+    let draft = approveLayout(approveAllFields(createReviewDraft(wizardManifest)))
     draft = setFieldStatus(draft, 'to', REVIEW_STATUS.REJECTED)
     draft = setFieldStatus(draft, 'send_at', REVIEW_STATUS.REJECTED)
     const approved = buildApprovedManifest(draft)
@@ -152,6 +156,10 @@ describe('review draft lifecycle', () => {
     expect(approved.ui_hints.mode).toBe('single')
     expect(approved.ui_hints).not.toHaveProperty('groups')
     expect(approved.ui_hints.field_order).toEqual(['subject', 'body'])
+    expect(approved.ui_hints.blocks.map((block) => block.field)).toEqual([
+      'subject',
+      'body',
+    ])
   })
 
   it('retains human edits and marks the field approved and modified', () => {
@@ -222,6 +230,10 @@ describe('review draft lifecycle', () => {
       'send_at',
       'review_notes',
     ])
+    expect(
+      draft.manifest.ui_hints.groups[2].blocks.at(-1),
+    ).toMatchObject({ type: 'field', field: 'review_notes' })
+    expect(draft.layoutApproved).toBe(false)
     expect(draft.fields.review_notes).toEqual({
       status: REVIEW_STATUS.APPROVED,
       origin: 'human',
@@ -307,5 +319,22 @@ describe('review draft lifecycle', () => {
 
     expect(canContinueReview(draft)).toBe(false)
     expect(() => buildApprovedManifest(draft)).toThrow(/at least one input/i)
+  })
+
+  it('requires approval for an AI layout and resets it after a content change', () => {
+    let draft = approveAllFields(createReviewDraft(singleManifest))
+
+    expect(draft.layoutApproved).toBe(false)
+    expect(() => buildApprovedManifest(draft)).toThrow(/content and layout/i)
+
+    draft = approveLayout(draft)
+    expect(canContinueReview(draft)).toBe(true)
+
+    draft = addContentBlock(draft, 'heading')
+    expect(draft.layoutApproved).toBe(false)
+    expect(draft.manifest.ui_hints.blocks.at(-1)).toMatchObject({
+      type: 'heading',
+      text: 'New heading',
+    })
   })
 })

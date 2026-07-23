@@ -9,7 +9,7 @@ import re
 
 from jsonschema import Draft202012Validator
 
-from meta_schema import MAX_INPUT_FIELDS, META_SCHEMA
+from meta_schema import MAX_INPUT_FIELDS, MAX_LAYOUT_BLOCKS, META_SCHEMA
 
 # Fail loudly at import time if the meta-schema itself is ever broken.
 Draft202012Validator.check_schema(META_SCHEMA)
@@ -93,6 +93,64 @@ def _structural_errors(manifest) -> list[str]:
         f"structural: {error.json_path}: {error.message}"
         for error in sorted(_VALIDATOR.iter_errors(manifest), key=lambda e: e.json_path)
     ]
+
+
+def _flatten_blocks(blocks: list[dict]) -> list[dict]:
+    """Return blocks in visual order, including section children."""
+    flattened = []
+    for block in blocks:
+        flattened.append(block)
+        if block["type"] == "section":
+            flattened.extend(block["children"])
+    return flattened
+
+
+def _validate_layout_blocks(
+    blocks: list[dict],
+    *,
+    properties: dict,
+    expected_fields: list[str],
+    path: str,
+    seen_block_ids: set[str],
+) -> tuple[list[str], list[str], int]:
+    """Validate one screen/step layout and return field order + block count."""
+    errors: list[str] = []
+    field_references: list[str] = []
+    flattened = _flatten_blocks(blocks)
+
+    for block in flattened:
+        block_id = block["id"]
+        if block_id in seen_block_ids:
+            errors.append(
+                f"semantic: layout block id '{block_id}' appears more than once"
+            )
+        seen_block_ids.add(block_id)
+
+        if block["type"] != "field":
+            continue
+        field_name = block["field"]
+        field_references.append(field_name)
+        if field_name not in properties:
+            errors.append(
+                f"semantic: {path} field block '{block_id}' references unknown "
+                f"input '{field_name}'"
+            )
+
+    seen_fields: set[str] = set()
+    for field_name in field_references:
+        if field_name in seen_fields:
+            errors.append(
+                f"semantic: {path} contains more than one field block for "
+                f"'{field_name}'"
+            )
+        seen_fields.add(field_name)
+
+    if field_references != expected_fields:
+        errors.append(
+            f"semantic: {path} field-block order must exactly equal its field order"
+        )
+
+    return errors, field_references, len(flattened)
 
 
 def _semantic_errors(manifest: dict) -> list[str]:
@@ -208,11 +266,34 @@ def _semantic_errors(manifest: dict) -> list[str]:
             )
 
     groups = ui_hints.get("groups")
+    top_level_blocks = ui_hints.get("blocks")
+    seen_block_ids: set[str] = set()
     if mode == "single":
         if groups:
             errors.append(
                 "semantic: ui_hints.groups must be omitted when "
                 "ui_hints.mode is 'single'"
+            )
+        if not top_level_blocks:
+            errors.append(
+                "semantic: ui_hints.blocks is required when ui_hints.mode is 'single'"
+            )
+            return errors
+        block_errors, block_fields, block_count = _validate_layout_blocks(
+            top_level_blocks,
+            properties=properties,
+            expected_fields=field_order,
+            path="ui_hints.blocks",
+            seen_block_ids=seen_block_ids,
+        )
+        errors.extend(block_errors)
+        if block_count > MAX_LAYOUT_BLOCKS:
+            errors.append(
+                f"semantic: layout supports at most {MAX_LAYOUT_BLOCKS} blocks"
+            )
+        if set(block_fields) != set(properties):
+            errors.append(
+                "semantic: every input property must appear in exactly one field block"
             )
         return errors
 
@@ -223,6 +304,10 @@ def _semantic_errors(manifest: dict) -> list[str]:
             "semantic: ui_hints.groups is required when ui_hints.mode is 'wizard'"
         )
         return errors
+    if top_level_blocks:
+        errors.append(
+            "semantic: ui_hints.blocks must be omitted when ui_hints.mode is 'wizard'"
+        )
 
     if len(groups) < 2:
         errors.append("semantic: wizard mode requires at least two groups")
@@ -232,6 +317,8 @@ def _semantic_errors(manifest: dict) -> list[str]:
     seen_group_ids = set()
     field_owner = {}
     flattened_fields = []
+    flattened_block_fields = []
+    total_block_count = 0
     has_group_reference_error = False
 
     for index, group in enumerate(groups):
@@ -271,6 +358,23 @@ def _semantic_errors(manifest: dict) -> list[str]:
             else:
                 field_owner[name] = group_id
 
+        group_blocks = group.get("blocks")
+        if not group_blocks:
+            errors.append(
+                f"semantic: ui_hints.groups[{index}].blocks is required"
+            )
+        else:
+            block_errors, block_fields, block_count = _validate_layout_blocks(
+                group_blocks,
+                properties=properties,
+                expected_fields=group["fields"],
+                path=f"ui_hints.groups[{index}].blocks",
+                seen_block_ids=seen_block_ids,
+            )
+            errors.extend(block_errors)
+            flattened_block_fields.extend(block_fields)
+            total_block_count += block_count
+
     for name in properties:
         if name not in field_owner:
             errors.append(
@@ -284,6 +388,15 @@ def _semantic_errors(manifest: dict) -> list[str]:
         errors.append(
             "semantic: concatenating wizard group fields must exactly equal "
             "ui_hints.field_order"
+        )
+    if flattened_block_fields != field_order:
+        errors.append(
+            "semantic: concatenating wizard field blocks must exactly equal "
+            "ui_hints.field_order"
+        )
+    if total_block_count > MAX_LAYOUT_BLOCKS:
+        errors.append(
+            f"semantic: layout supports at most {MAX_LAYOUT_BLOCKS} blocks"
         )
 
     return errors

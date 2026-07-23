@@ -28,7 +28,12 @@ def test_legacy_single_manifest_gets_single_mode_without_mutating_source():
     upgraded = upgrade_legacy_layout(source)
 
     assert upgraded["ui_hints"]["mode"] == "single"
+    assert upgraded["ui_hints"]["blocks"] == [
+        {"id": "field-to", "type": "field", "field": "to"},
+        {"id": "field-subject", "type": "field", "field": "subject"},
+    ]
     assert "mode" not in source["ui_hints"]
+    assert "blocks" not in source["ui_hints"]
 
 
 def test_legacy_wizard_gets_mode_ids_and_descriptions():
@@ -48,12 +53,16 @@ def test_legacy_wizard_gets_mode_ids_and_descriptions():
             "title": "Recipient Details",
             "description": "Provide the inputs for recipient details.",
             "fields": ["to"],
+            "blocks": [{"id": "field-to", "type": "field", "field": "to"}],
         },
         {
             "id": "message",
             "title": "Message",
             "description": "Provide the inputs for message.",
             "fields": ["subject"],
+            "blocks": [
+                {"id": "field-subject", "type": "field", "field": "subject"}
+            ],
         },
     ]
 
@@ -82,6 +91,19 @@ def test_current_contract_is_not_silently_repaired():
 
     assert upgraded == source
     assert "groups" not in upgraded["ui_hints"]
+
+
+def test_pre_block_current_manifest_gets_field_only_blocks():
+    source = legacy_manifest()
+    source["ui_hints"]["mode"] = "single"
+
+    upgraded = upgrade_legacy_layout(source)
+
+    assert upgraded["ui_hints"]["blocks"] == [
+        {"id": "field-to", "type": "field", "field": "to"},
+        {"id": "field-subject", "type": "field", "field": "subject"},
+    ]
+    assert "blocks" not in source["ui_hints"]
 
 
 def test_save_route_upgrades_legacy_manifest_before_persisting(monkeypatch):

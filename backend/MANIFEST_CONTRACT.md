@@ -18,7 +18,25 @@ execution behavior.
   },
   "ui_hints": {
     "mode": "single",
-    "field_order": ["topic"]
+    "field_order": ["topic"],
+    "blocks": [
+      {
+        "id": "request-heading",
+        "type": "heading",
+        "text": "Start your research",
+        "level": 2
+      },
+      {
+        "id": "request-copy",
+        "type": "paragraph",
+        "text": "Describe the topic you want the agent to investigate."
+      },
+      {
+        "id": "field-topic",
+        "type": "field",
+        "field": "topic"
+      }
+    ]
   }
 }
 ```
@@ -41,6 +59,21 @@ are never interpreted from a manifest.
 Agent name, icon, color, and welcome copy are presentation settings stored
 beside the manifest; they are not part of this validated input contract.
 
+`ui_hints.blocks` controls safe visual content and field placement. Supported
+types are `field`, `heading`, `paragraph`, `divider`, `callout`, and `section`.
+Sections may contain non-section blocks, but sections cannot be nested. Block
+IDs are unique lowercase kebab-case identifiers. Every input appears in exactly
+one field block, and field-block order equals `field_order`. Text is plain text:
+raw HTML, JavaScript, CSS, remote references, images, and custom widgets are
+not accepted.
+
+A manifest may contain at most 100 blocks including section children. Block
+IDs are at most 64 characters; headings are at most 120 characters;
+paragraphs and callouts are at most 1,000 characters; section titles are at
+most 80 characters; and optional section descriptions are at most 240
+characters. Heading levels are limited to 2–4 and callout tones to
+`information`, `success`, or `warning`.
+
 ## Wizard
 
 ```json
@@ -62,13 +95,38 @@ beside the manifest; they are not part of this validated input contract.
         "id": "recipient",
         "title": "Recipient",
         "description": "Choose who should receive the message.",
-        "fields": ["recipient"]
+        "fields": ["recipient"],
+        "blocks": [
+          {
+            "id": "field-recipient",
+            "type": "field",
+            "field": "recipient"
+          }
+        ]
       },
       {
         "id": "message",
         "title": "Message",
         "description": "Write the subject and message body.",
-        "fields": ["subject", "body"]
+        "fields": ["subject", "body"],
+        "blocks": [
+          {
+            "id": "message-heading",
+            "type": "heading",
+            "text": "Write the message",
+            "level": 2
+          },
+          {
+            "id": "field-subject",
+            "type": "field",
+            "field": "subject"
+          },
+          {
+            "id": "field-body",
+            "type": "field",
+            "field": "body"
+          }
+        ]
       }
     ]
   }
@@ -82,8 +140,11 @@ Wizard invariants:
 - Every input field occurs in exactly one group.
 - Groups cannot reference unknown fields.
 - Concatenating every group's `fields` array exactly equals `field_order`.
+- Each group owns its `blocks`; wizard manifests omit top-level `blocks`.
+- Each group's field-block order exactly equals that group's `fields`.
 - `field_order` itself contains every input property exactly once.
 
-Manifests saved before the `mode` contract are upgraded in API load/save paths
-by `manifest_migrations.py`. Newly generated manifests must satisfy the current
-contract without migration.
+Manifests saved before the `mode` or safe-block contracts are upgraded in API
+load/save paths by `manifest_migrations.py`. Missing block layouts become
+field-only layouts in memory; immutable stored versions are not rewritten.
+Newly generated manifests must satisfy the current contract without migration.

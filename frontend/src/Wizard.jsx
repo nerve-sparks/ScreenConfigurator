@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import FormRenderer from './FormRenderer.jsx'
-import { schemaForGroup } from './manifestLayout.js'
+import { schemaForGroup, toUiSchema } from './manifestLayout.js'
 
 /**
  * Multi-screen wizard (Step 6): one step per ui_hints.group.
@@ -23,6 +23,8 @@ export default function Wizard({
   disabled = false,
   showSummary = false,
   submitLabel = 'Submit',
+  activeGroupId,
+  onActiveGroupChange,
 }) {
   const groups = Array.isArray(manifest?.ui_hints?.groups)
     ? manifest.ui_hints.groups
@@ -30,15 +32,26 @@ export default function Wizard({
   const [stepIndex, setStepIndex] = useState(0)
   const [stepData, setStepData] = useState(() => groups.map(() => ({})))
   const [showingSummary, setShowingSummary] = useState(false)
+  const previewNavigation = disabled && typeof onActiveGroupChange === 'function'
+  const requestedStepIndex = previewNavigation
+    ? groups.findIndex((candidate) => candidate.id === activeGroupId)
+    : -1
+  const currentStepIndex = requestedStepIndex >= 0 ? requestedStepIndex : stepIndex
 
-  const isLastStep = stepIndex === groups.length - 1
-  const group = groups[stepIndex]
+  const isLastStep = currentStepIndex === groups.length - 1
+  const group = groups[currentStepIndex]
   const schema = group ? schemaForGroup(manifest.input_schema, group) : null
+  const uiSchema = group && schema
+    ? toUiSchema({
+        input_schema: schema,
+        ui_hints: { field_order: group.fields },
+      })
+    : undefined
 
   const handleChange = (formData) => {
     setStepData((previous) => {
       const next = [...previous]
-      next[stepIndex] = formData
+      next[currentStepIndex] = formData
       return next
     })
   }
@@ -46,7 +59,7 @@ export default function Wizard({
   const handleStepSubmit = (formData) => {
     // RJSF has already validated this step's fields.
     const next = [...stepData]
-    next[stepIndex] = formData
+    next[currentStepIndex] = formData
     setStepData(next)
     if (isLastStep) {
       if (showSummary) setShowingSummary(true)
@@ -107,33 +120,53 @@ export default function Wizard({
   return (
     <div className="wizard-shell">
       <ol className="wizard-step-rail" aria-label="Form steps">
-        {groups.map((step, index) => (
-          <li
-            key={step.id ?? index}
-            className={`${index === stepIndex ? 'is-active' : ''} ${
-              index < stepIndex ? 'is-complete' : ''
-            }`}
-            aria-current={index === stepIndex ? 'step' : undefined}
-          >
-            <span className="wizard-step-marker" aria-hidden="true">
-              {index < stepIndex ? '✓' : index + 1}
-            </span>
-            <span className="wizard-step-label" aria-hidden="true">{step.title}</span>
-            <span className="sr-only">
-              {step.title}: {index < stepIndex ? 'complete' : index === stepIndex ? 'current' : 'upcoming'}
-            </span>
-          </li>
-        ))}
+        {groups.map((step, index) => {
+          const isCurrent = index === currentStepIndex
+          const isComplete = !previewNavigation && index < currentStepIndex
+          const content = (
+            <>
+              <span className="wizard-step-marker" aria-hidden="true">
+                {isComplete ? '✓' : index + 1}
+              </span>
+              <span className="wizard-step-label" aria-hidden="true">{step.title}</span>
+              <span className="sr-only">
+                {step.title}: {isCurrent ? 'current' : isComplete ? 'complete' : 'available'}
+              </span>
+            </>
+          )
+          return (
+            <li
+              key={step.id ?? index}
+              className={`${isCurrent ? 'is-active' : ''} ${
+                isComplete ? 'is-complete' : ''
+              }`}
+              aria-current={isCurrent ? 'step' : undefined}
+            >
+              {previewNavigation ? (
+                <button
+                  type="button"
+                  className="wizard-step-selector"
+                  aria-label={`Preview ${step.title} step`}
+                  onClick={() => onActiveGroupChange(step.id)}
+                >
+                  {content}
+                </button>
+              ) : content}
+            </li>
+          )
+        })}
       </ol>
       <p className="wizard-step-count text-muted mb-1">
-        Step {stepIndex + 1} of {groups.length}
+        Step {currentStepIndex + 1} of {groups.length}
       </p>
       <h2 className="h5 mb-3">{group.title}</h2>
       <p className="wizard-description text-muted">{group.description}</p>
       <FormRenderer
-        key={group.id ?? stepIndex}
+        key={group.id ?? currentStepIndex}
         schema={schema}
-        formData={stepData[stepIndex]}
+        uiSchema={uiSchema}
+        blocks={group.blocks}
+        formData={stepData[currentStepIndex]}
         onChange={handleChange}
         onSubmit={handleStepSubmit}
         disabled={disabled}

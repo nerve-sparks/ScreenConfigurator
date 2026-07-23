@@ -46,6 +46,75 @@ const generatedManifest = {
   ui_hints: {
     mode: 'single',
     field_order: ['topic', 'length'],
+    blocks: [
+      {
+        id: 'research-heading',
+        type: 'heading',
+        text: 'Research details',
+        level: 2,
+      },
+      { id: 'field-topic', type: 'field', field: 'topic' },
+      { id: 'field-length', type: 'field', field: 'length' },
+    ],
+  },
+}
+
+const generatedWizardManifest = {
+  input_schema: {
+    type: 'object',
+    properties: {
+      job_title: { type: 'string', title: 'Job Title' },
+      candidate_name: { type: 'string', title: 'Candidate Name' },
+      resume: {
+        type: 'string',
+        format: 'data-url',
+        title: 'Resume',
+        contentMediaType: 'application/pdf',
+      },
+    },
+    required: ['job_title', 'candidate_name', 'resume'],
+  },
+  ui_hints: {
+    mode: 'wizard',
+    field_order: ['job_title', 'candidate_name', 'resume'],
+    groups: [
+      {
+        id: 'job-details',
+        title: 'Job Details',
+        description: 'Define the role you are recruiting for.',
+        fields: ['job_title'],
+        blocks: [
+          { id: 'job-heading', type: 'heading', text: 'Define the Role', level: 2 },
+          { id: 'field-job-title', type: 'field', field: 'job_title' },
+        ],
+      },
+      {
+        id: 'candidate-information',
+        title: 'Candidate Information',
+        description: 'Tell us who the candidate is.',
+        fields: ['candidate_name'],
+        blocks: [
+          { id: 'candidate-heading', type: 'heading', text: 'Candidate Profile', level: 2 },
+          { id: 'field-candidate-name', type: 'field', field: 'candidate_name' },
+        ],
+      },
+      {
+        id: 'qualifications-resume',
+        title: 'Qualifications & Resume',
+        description: 'Add the candidate qualifications and resume.',
+        fields: ['resume'],
+        blocks: [
+          { id: 'resume-heading', type: 'heading', text: 'Experience & Documents', level: 2 },
+          {
+            id: 'resume-callout',
+            type: 'callout',
+            text: 'Upload the latest resume for the most accurate review.',
+            tone: 'information',
+          },
+          { id: 'field-resume', type: 'field', field: 'resume' },
+        ],
+      },
+    ],
   },
 }
 
@@ -205,6 +274,7 @@ describe('builder route', () => {
     expect(screen.getByRole('button', { name: 'Continue to preview' })).toBeDisabled()
 
     await user.click(screen.getByRole('button', { name: 'Approve all' }))
+    await user.click(screen.getByRole('button', { name: 'Approve layout' }))
     await user.click(screen.getByRole('button', { name: 'Continue to preview' }))
 
     expect(validateScreen).toHaveBeenCalledOnce()
@@ -252,6 +322,50 @@ describe('builder route', () => {
     await waitFor(() => expect(saveDraft).toHaveBeenCalled(), { timeout: 2000 })
     expect(saveDraft.mock.calls.at(-1)[0]).toBe('research-agent')
     expect(saveDraft.mock.calls.at(-1)[1].name).toBe('Research Copilot')
+  })
+
+  it('keeps Content & Layout and the read-only wizard canvas on the same step', async () => {
+    const user = userEvent.setup()
+    generate.mockResolvedValueOnce(generatedWizardManifest)
+    renderApp()
+
+    await user.type(await screen.findByLabelText('Agent name'), 'Recruitment Agent')
+    await user.type(
+      screen.getByLabelText('Describe your agent'),
+      'Collect job details, candidate information, qualifications, and a resume.',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+    await screen.findByRole('heading', { name: 'Review suggested inputs' })
+
+    const layoutTabs = screen.getByRole('tablist', { name: 'Wizard layout steps' })
+    const qualificationsTab = within(layoutTabs).getByRole('tab', {
+      name: 'Qualifications & Resume',
+    })
+    await user.click(qualificationsTab)
+
+    const preview = screen.getByLabelText('Generated agent screen')
+    expect(within(preview).getByText('Step 3 of 3')).toBeInTheDocument()
+    expect(
+      within(preview).getByRole('heading', { name: 'Qualifications & Resume' }),
+    ).toBeInTheDocument()
+    expect(
+      within(preview).getByRole('heading', { name: 'Experience & Documents' }),
+    ).toBeInTheDocument()
+    expect(within(preview).getByText(
+      'Upload the latest resume for the most accurate review.',
+    )).toBeInTheDocument()
+    expect(preview.querySelector('input[type="file"]')).toBeDisabled()
+
+    await user.click(within(preview).getByRole('button', {
+      name: 'Preview Candidate Information step',
+    }))
+    expect(
+      within(layoutTabs).getByRole('tab', { name: 'Candidate Information' }),
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(within(preview).getByText('Step 2 of 3')).toBeInTheDocument()
+    expect(
+      within(preview).getByRole('heading', { name: 'Candidate Profile' }),
+    ).toBeInTheDocument()
   })
 
   it('autosaves edits as a draft without publishing a version', async () => {
@@ -317,6 +431,7 @@ describe('builder route', () => {
     await user.click(screen.getByRole('button', { name: 'Generate' }))
     await screen.findByRole('heading', { name: 'Review suggested inputs' })
     await user.click(screen.getByRole('button', { name: 'Approve all' }))
+    await user.click(screen.getByRole('button', { name: 'Approve layout' }))
     await user.click(screen.getByRole('button', { name: 'Continue to preview' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -348,6 +463,7 @@ describe('builder route', () => {
     )
     await user.click(screen.getByRole('button', { name: 'Add input' }))
     await user.click(screen.getByRole('button', { name: 'Approve all' }))
+    await user.click(screen.getByRole('button', { name: 'Approve layout' }))
     await user.click(screen.getByRole('button', { name: 'Continue to preview' }))
 
     expect(validateScreen).toHaveBeenCalledOnce()

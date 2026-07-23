@@ -16,6 +16,10 @@ screen is rendered and saved.
 - LLM-generated input schemas through LiteLLM.
 - Single-screen forms and multi-step wizards.
 - Human approval for every AI-suggested input.
+- LLM-proposed headings, paragraphs, sections, dividers, callouts, and field
+  placement in the same generation request.
+- A safe content-and-layout editor with whole-layout approval, accessible
+  move controls, and no raw HTML, JavaScript, CSS, or JSON editing.
 - Editing, excluding, and removing suggested fields.
 - Human-authored fields with configurable type and required state.
 - Placement of custom fields into a selected wizard step.
@@ -42,11 +46,12 @@ flowchart LR
     C --> D[Gemini or Vertex AI]
     D --> E[Manifest validation]
     E --> F[Human input review]
-    F --> G[FastAPI /validate]
-    G --> H[Single screen or wizard preview]
-    H --> I[Mutable draft autosave]
-    I --> J[Explicit publish]
-    J --> K[(MongoDB draft and version registry)]
+    F --> G[Content and layout review]
+    G --> H[FastAPI /validate]
+    H --> I[Single screen or wizard preview]
+    I --> J[Mutable draft autosave]
+    J --> K[Explicit publish]
+    K --> L[(MongoDB draft and version registry)]
 ```
 
 The manifest is the contract shared by the LLM, backend, and frontend. It
@@ -56,6 +61,13 @@ contains:
 - `ui_hints.mode`: either `single` or `wizard`.
 - `ui_hints.field_order`: the complete display order.
 - `ui_hints.groups`: wizard-step definitions when wizard mode is selected.
+- `ui_hints.blocks`: safe content and field placement for a single screen.
+- `ui_hints.groups[].blocks`: safe content and field placement for each
+  wizard step.
+
+Content is stored as allowlisted JSON blocks and mapped to controlled React
+components. Input values remain owned by React JSON Schema Form, so adding
+content does not bypass schema validation or change submitted data.
 
 See [the manifest contract](backend/MANIFEST_CONTRACT.md) for examples and
 validation invariants.
@@ -101,6 +113,9 @@ ScreenConfigurator/
 │   │   ├── ManifestReview.jsx   # Human approval workflow
 │   │   ├── AddFieldForm.jsx     # Human-authored input builder
 │   │   ├── FormRenderer.jsx     # Generic JSON Schema renderer
+│   │   ├── LayoutRenderer.jsx   # Safe block-to-React rendering
+│   │   ├── LayoutEditor.jsx     # Human layout review and editing
+│   │   ├── layoutBlocks.js      # Immutable layout operations and migration
 │   │   ├── Wizard.jsx           # Multi-step renderer
 │   │   ├── reviewModel.js       # Immutable review operations
 │   │   └── styles.css           # Responsive design system
@@ -202,9 +217,12 @@ configured model name may be bare or start with `openai/`; the application adds
 that provider prefix when needed because the gateway uses the OpenAI-compatible
 wire format.
 
-When LiteLLM reports that the selected model supports response schemas, the
-request includes the complete manifest meta-schema; other models use JSON-object
-mode. Responses are parsed as strict JSON first, with repair for common
+Gemini models use JSON-object response mode because Gemini's structured-output
+implementation does not accept every rule in the application's complete
+draft-2020-12 manifest meta-schema. The full field, wizard, content-block, and
+security contract is still enforced immediately by the backend. Compatible
+non-Gemini models use the complete response schema when LiteLLM reports
+support. Responses are parsed as strict JSON first, with repair for common
 truncation and syntax problems. Invalid JSON or a manifest that fails backend
 validation receives exactly one correction attempt containing the validation
 errors. Provider errors are mapped to generic API messages so credentials or

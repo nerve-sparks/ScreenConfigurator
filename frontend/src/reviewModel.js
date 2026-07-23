@@ -1,3 +1,17 @@
+import {
+  addLayoutBlock,
+  appendFieldBlock,
+  convertWizardLayoutToSingle,
+  createLayoutBlock,
+  moveLayoutBlock,
+  moveLayoutBlockTo,
+  normalizeLayoutBlocks,
+  pruneLayoutToFields,
+  removeLayoutBlock,
+  syncFieldOrder,
+  updateLayoutBlock,
+} from './layoutBlocks.js'
+
 export const REVIEW_STATUS = Object.freeze({
   PENDING: 'pending',
   APPROVED: 'approved',
@@ -47,12 +61,16 @@ export function fieldNameFromLabel(label) {
 
 export function createReviewDraft(
   manifest,
-  { status = REVIEW_STATUS.PENDING, origin = 'llm' } = {},
+  {
+    status = REVIEW_STATUS.PENDING,
+    origin = 'llm',
+    layoutApproved = origin !== 'llm',
+  } = {},
 ) {
   if (!VALID_REVIEW_STATUSES.has(status)) {
     throw new Error('Choose a valid initial review status.')
   }
-  const copiedManifest = clone(manifest)
+  const copiedManifest = normalizeLayoutBlocks(manifest)
   const fields = {}
 
   for (const name of propertyNamesInOrder(copiedManifest)) {
@@ -67,6 +85,20 @@ export function createReviewDraft(
     manifest: copiedManifest,
     fields,
     deletedFields: [],
+    layoutApproved: Boolean(layoutApproved),
+  }
+}
+
+/** Upgrade persisted editor state written before layout approval existed. */
+export function normalizeReviewDraft(draft) {
+  if (!draft?.manifest || !draft?.fields) return draft
+  return {
+    ...clone(draft),
+    manifest: normalizeLayoutBlocks(draft.manifest),
+    deletedFields: Array.isArray(draft.deletedFields) ? clone(draft.deletedFields) : [],
+    layoutApproved: typeof draft.layoutApproved === 'boolean'
+      ? draft.layoutApproved
+      : true,
   }
 }
 
@@ -105,7 +137,11 @@ export function reviewProgress(draft) {
 
 export function canContinueReview(draft) {
   const progress = reviewProgress(draft)
-  return progress.pending === 0 && progress.approved > 0
+  return (
+    progress.pending === 0
+    && progress.approved > 0
+    && draft?.layoutApproved === true
+  )
 }
 
 export function setFieldStatus(draft, name, status) {
@@ -211,9 +247,12 @@ export function addHumanField(
     requiredFields.has(field),
   )
 
+  const manifestWithBlock = appendFieldBlock(manifest, fieldName, groupId)
+
   return {
     ...draft,
-    manifest,
+    manifest: manifestWithBlock,
+    layoutApproved: false,
     fields: {
       ...draft.fields,
       [fieldName]: {
@@ -264,7 +303,7 @@ export function setFieldRequired(draft, name, isRequired) {
 }
 
 function pruneManifestToFields(manifest, includedFields) {
-  const pruned = clone(manifest)
+  let pruned = pruneLayoutToFields(manifest, includedFields)
   const fieldOrder = propertyNamesInOrder(pruned).filter((name) =>
     includedFields.has(name),
   )
@@ -299,12 +338,14 @@ function pruneManifestToFields(manifest, includedFields) {
 
     if (groups.length >= 2) {
       pruned.ui_hints.groups = groups
+      pruned = syncFieldOrder(pruned)
     } else {
-      pruned.ui_hints.mode = 'single'
-      delete pruned.ui_hints.groups
+      pruned.ui_hints.groups = groups
+      pruned = convertWizardLayoutToSingle(pruned)
     }
   } else {
     delete pruned.ui_hints.groups
+    pruned = syncFieldOrder(pruned)
   }
 
   return pruned
@@ -323,8 +364,10 @@ export function deleteField(draft, name) {
   delete fields[name]
 
   return {
+    ...draft,
     manifest,
     fields,
+    layoutApproved: false,
     deletedFields: [
       ...(draft.deletedFields ?? []),
       {
@@ -349,6 +392,64 @@ export function buildApprovedManifest(draft) {
   if (approvedFields.size === 0) {
     throw new Error('Approve at least one input before preview.')
   }
+  if (draft.layoutApproved !== true) {
+    throw new Error('Approve the content and layout before preview.')
+  }
 
   return pruneManifestToFields(draft.manifest, approvedFields)
+}
+
+function changeLayout(draft, manifest) {
+  if (!draft || manifest === draft.manifest) return draft
+  return {
+    ...draft,
+    manifest,
+    layoutApproved: false,
+  }
+}
+
+export function approveLayout(draft) {
+  if (!draft) return draft
+  return { ...draft, layoutApproved: true }
+}
+
+export function addContentBlock(draft, type, groupId = null) {
+  if (!draft?.manifest) return draft
+  const block = createLayoutBlock(type, draft.manifest)
+  return changeLayout(
+    draft,
+    addLayoutBlock(draft.manifest, block, groupId),
+  )
+}
+
+export function editContentBlock(draft, blockId, changes) {
+  if (!draft?.manifest) return draft
+  return changeLayout(
+    draft,
+    updateLayoutBlock(draft.manifest, blockId, changes),
+  )
+}
+
+export function deleteContentBlock(draft, blockId) {
+  if (!draft?.manifest) return draft
+  return changeLayout(
+    draft,
+    removeLayoutBlock(draft.manifest, blockId),
+  )
+}
+
+export function reorderLayoutBlock(draft, blockId, direction) {
+  if (!draft?.manifest) return draft
+  return changeLayout(
+    draft,
+    moveLayoutBlock(draft.manifest, blockId, direction),
+  )
+}
+
+export function relocateLayoutBlock(draft, blockId, sectionId) {
+  if (!draft?.manifest) return draft
+  return changeLayout(
+    draft,
+    moveLayoutBlockTo(draft.manifest, blockId, sectionId),
+  )
 }
