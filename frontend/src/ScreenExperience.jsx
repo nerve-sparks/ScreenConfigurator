@@ -18,6 +18,8 @@ export default function ScreenExperience({
   interactive = true,
   activeGroupId,
   onActiveGroupChange,
+  formData,
+  onChange,
 }) {
   const safeManifest = normalizeLayoutBlocks(manifest)
   const wizardMode = isWizardManifest(safeManifest)
@@ -49,6 +51,8 @@ export default function ScreenExperience({
             submitLabel={identity.submit_label}
             activeGroupId={activeGroupId}
             onActiveGroupChange={onActiveGroupChange}
+            formData={formData}
+            onChange={onChange}
           />
         ) : (
           <FormRenderer
@@ -57,6 +61,8 @@ export default function ScreenExperience({
             uiSchema={toUiSchema(safeManifest)}
             blocks={safeManifest.ui_hints.blocks}
             onSubmit={onSubmit}
+            formData={formData}
+            onChange={onChange}
             disabled={!interactive}
             submitLabel={identity.submit_label}
           />

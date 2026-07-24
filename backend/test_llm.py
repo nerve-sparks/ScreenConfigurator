@@ -50,7 +50,9 @@ def clear_gateway(monkeypatch):
     monkeypatch.delenv("LITE_LLM_ENABLE", raising=False)
     monkeypatch.delenv("LITE_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LITE_LLM_KEY", raising=False)
+    monkeypatch.delenv("LITE_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("LITE_LLM_MODEL_GEMINI", raising=False)
+    monkeypatch.delenv("LITE_LLM_MODEL_OPENAI", raising=False)
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     monkeypatch.delenv("LLM_GENERATION_TIMEOUT_SECONDS", raising=False)
@@ -71,6 +73,13 @@ def configure_gateway(monkeypatch):
     monkeypatch.setenv("LITE_LLM_KEY", "test-gateway-key")
     monkeypatch.setenv("LITE_LLM_MODEL_GEMINI", "gemini-test")
     monkeypatch.setattr(llm, "supports_response_schema", lambda **_: False)
+
+
+def configure_openai_gateway(monkeypatch):
+    configure_gateway(monkeypatch)
+    monkeypatch.setenv("LITE_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LITE_LLM_MODEL_OPENAI", "gpt-5.5")
+    monkeypatch.setattr(llm, "supports_response_schema", lambda **_: True)
 
 
 def test_prompt_defines_single_and_wizard_contracts():
@@ -213,9 +222,33 @@ def test_generate_schema_routes_through_gateway_when_enabled(monkeypatch):
     result = llm.generate_schema("a gateway-backed research agent")
 
     assert result == SINGLE_MANIFEST
-    assert captured["model"] == "gemini"
+    assert captured["model"] == "manifest-generator"
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["messages"][1]["content"] == "a gateway-backed research agent"
+
+
+def test_gpt_5_5_gateway_uses_application_validated_json(monkeypatch):
+    configure_openai_gateway(monkeypatch)
+    monkeypatch.setattr(
+        llm,
+        "supports_response_schema",
+        lambda **_: pytest.fail(
+            "GPT-5.5 must bypass its incomplete full-schema capability"
+        ),
+    )
+    captured = {}
+
+    class FakeRouter:
+        def completion(self, **kwargs):
+            captured.update(kwargs)
+            return completion_response(json.dumps(SINGLE_MANIFEST))
+
+    monkeypatch.setattr(llm, "_get_router", lambda: FakeRouter())
+
+    assert llm.generate_schema("an OpenAI-backed agent") == SINGLE_MANIFEST
+    assert captured["model"] == "manifest-generator"
+    assert captured["response_format"] == {"type": "json_object"}
+    assert "temperature" not in captured
 
 
 def test_gateway_router_uses_openai_compatible_configuration(monkeypatch):
@@ -234,7 +267,7 @@ def test_gateway_router_uses_openai_compatible_configuration(monkeypatch):
     assert first is second
     assert captured["model_list"] == [
         {
-            "model_name": "gemini",
+            "model_name": "manifest-generator",
             "litellm_params": {
                 "model": "openai/gemini-test",
                 "api_base": "https://gateway.example.test",
@@ -242,6 +275,74 @@ def test_gateway_router_uses_openai_compatible_configuration(monkeypatch):
             },
         }
     ]
+
+
+def test_openai_gateway_router_uses_only_the_openai_model(monkeypatch):
+    configure_openai_gateway(monkeypatch)
+    captured = {}
+
+    class FakeRouter:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(llm, "Router", FakeRouter)
+
+    llm._get_router()
+
+    assert captured["model_list"] == [
+        {
+            "model_name": "manifest-generator",
+            "litellm_params": {
+                "model": "openai/gpt-5.5",
+                "api_base": "https://gateway.example.test",
+                "api_key": "test-gateway-key",
+            },
+        }
+    ]
+    assert "gemini-test" not in str(captured["model_list"])
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_model"),
+    [
+        ("gemini", "gemini-test"),
+        ("openai", "gpt-5.5"),
+    ],
+)
+def test_gateway_provider_selects_only_its_model(monkeypatch, provider, expected_model):
+    configure_gateway(monkeypatch)
+    monkeypatch.setenv("LITE_LLM_PROVIDER", provider)
+    monkeypatch.setenv("LITE_LLM_MODEL_OPENAI", "gpt-5.5")
+
+    target = llm.gateway_generation_target()
+
+    assert target == {
+        "route": "litellm_gateway",
+        "provider": provider,
+        "model": expected_model,
+    }
+
+
+def test_gateway_provider_defaults_to_gemini(monkeypatch):
+    configure_gateway(monkeypatch)
+    monkeypatch.delenv("LITE_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("LITE_LLM_MODEL_OPENAI", "gpt-5.5")
+
+    assert llm.gateway_generation_target()["provider"] == "gemini"
+    assert llm.gateway_generation_target()["model"] == "gemini-test"
+
+
+def test_invalid_gateway_provider_is_rejected_before_calling_model(monkeypatch):
+    configure_gateway(monkeypatch)
+    monkeypatch.setenv("LITE_LLM_PROVIDER", "automatic")
+    monkeypatch.setattr(
+        llm,
+        "completion",
+        lambda **_: pytest.fail("provider must not be called"),
+    )
+
+    with pytest.raises(llm.LLMConfigurationError, match="LITE_LLM_PROVIDER"):
+        llm.generate_schema("test agent")
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
@@ -271,6 +372,14 @@ def test_gateway_requires_all_configuration(monkeypatch, missing_setting):
     monkeypatch.delenv(missing_setting)
 
     with pytest.raises(RuntimeError, match=missing_setting):
+        llm.generate_schema("test agent")
+
+
+def test_openai_gateway_requires_its_selected_model(monkeypatch):
+    configure_openai_gateway(monkeypatch)
+    monkeypatch.delenv("LITE_LLM_MODEL_OPENAI")
+
+    with pytest.raises(llm.LLMConfigurationError, match="LITE_LLM_MODEL_OPENAI"):
         llm.generate_schema("test agent")
 
 

@@ -62,12 +62,13 @@ export function WorkspaceLoading({ message }) {
 export function StudioLayout() {
   const location = useLocation()
   const builderActive = location.pathname.startsWith('/builder')
+    || location.pathname.startsWith('/studio/agents')
 
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="app-header-inner">
-          <Link className="brand" to="/builder/new" aria-label="Agent Screen Studio home">
+          <Link className="brand" to="/library" aria-label="Agent Screen Studio home">
             <span className="brand-mark">
               <SparkIcon size={22} />
             </span>
@@ -80,7 +81,7 @@ export function StudioLayout() {
           <nav className="app-navigation" aria-label="Studio navigation">
             <Link
               className={builderActive ? 'is-active' : ''}
-              to="/builder/new"
+              to="/studio/agents/new"
               aria-current={builderActive ? 'page' : undefined}
             >
               Builder

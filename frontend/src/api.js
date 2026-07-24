@@ -230,3 +230,250 @@ export async function setScreenArchived(agentId, archived) {
   }
   return result
 }
+
+export async function createAgentProject({ name, description, presentation }) {
+  const response = await fetch(`${API_BASE_URL}/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, presentation }),
+  })
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function listAgents() {
+  const response = await fetch(`${API_BASE_URL}/agents`)
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (!Array.isArray(result?.agents)) {
+    throw new Error('Backend returned an invalid agent-library response.')
+  }
+  return result.agents
+}
+
+export async function loadAgentProject(agentId) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}`,
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (result?.agent_id !== agentId || !Array.isArray(result?.screens)) {
+    throw new Error('Backend returned an invalid agent-project response.')
+  }
+  return result
+}
+
+export async function saveAgentProject(agentId, payload) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/draft`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function generateScreenPlan(agentId, description = '') {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screen-plan/generate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (!Array.isArray(result?.screens)) {
+    throw new Error('Backend returned an invalid screen plan.')
+  }
+  return result
+}
+
+export async function generateProjectScreen(agentId, payload) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/generate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...payload,
+        ...(payload.screenId ? { screen_id: payload.screenId } : {}),
+      }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (!result?.screen_id || !result?.manifest || !result?.screen_type) {
+    throw new Error('Backend returned an invalid generated screen.')
+  }
+  return result
+}
+
+async function writeProjectScreenDraft(
+  agentId,
+  screenId,
+  method,
+  payload,
+) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/draft`,
+    {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        screen_type: payload.screenType,
+        purpose: payload.purpose,
+        manifest: payload.manifest,
+        ...(payload.approvedManifest
+          ? { approved_manifest: payload.approvedManifest }
+          : {}),
+        description: payload.description,
+        name: payload.name,
+        source: payload.source ?? 'llm',
+        presentation: payload.presentation,
+        editor_state: payload.editorState ?? {},
+        generation: payload.generation ?? {},
+      }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (result?.status !== 'draft' || !result?.revision) {
+    throw new Error('Backend returned an invalid project-screen draft.')
+  }
+  return result
+}
+
+export function createProjectScreenDraft(agentId, screenId, payload) {
+  return writeProjectScreenDraft(agentId, screenId, 'POST', payload)
+}
+
+export function saveProjectScreenDraft(agentId, screenId, payload) {
+  return writeProjectScreenDraft(agentId, screenId, 'PUT', payload)
+}
+
+export async function loadProjectScreenDraft(agentId, screenId) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/draft`,
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (result?.status !== 'draft' || !result?.draft_manifest) {
+    throw new Error('Backend returned an invalid project-screen draft.')
+  }
+  return result
+}
+
+export async function duplicateProjectScreen(agentId, screenId, name) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/duplicate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function setProjectScreenArchived(
+  agentId,
+  screenId,
+  archived,
+) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/archive`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function publishAgentProject(
+  agentId,
+  { projectRevision, screenRevisions, changeSummary },
+) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/publish`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_revision: projectRevision,
+        screen_revisions: screenRevisions,
+        change_summary: changeSummary,
+      }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function listAgentReleases(agentId) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/releases`,
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (!Array.isArray(result?.releases)) {
+    throw new Error('Backend returned invalid release history.')
+  }
+  return result.releases
+}
+
+export async function loadAgentRelease(agentId, version = null) {
+  const query = Number.isInteger(version) ? `?version=${version}` : ''
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/published${query}`,
+  )
+  if (!response.ok) throw await responseError(response)
+  const result = await response.json()
+  if (!Array.isArray(result?.screens) || !Number.isInteger(result?.version)) {
+    throw new Error('Backend returned an invalid agent release.')
+  }
+  return result
+}
+
+export async function restoreAgentRelease(agentId, version) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/releases/${version}/restore`,
+    { method: 'POST' },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function setAgentArchived(agentId, archived) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/archive`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function duplicateAgentProject(agentId, name) {
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/duplicate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}

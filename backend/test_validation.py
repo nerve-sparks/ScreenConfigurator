@@ -679,14 +679,35 @@ def test_generation_metadata_records_model_and_prompt_version():
         os.environ,
         {
             "LITE_LLM_ENABLE": "true",
+            "LITE_LLM_PROVIDER": "gemini",
             "LITE_LLM_MODEL_GEMINI": "gemini/gemini-3.5-flash",
         },
     ):
         metadata = main._generation_metadata()
 
     assert metadata == {
-        "provider": "litellm_gateway",
+        "route": "litellm_gateway",
+        "provider": "gemini",
         "model": "gemini/gemini-3.5-flash",
+        "prompt_version": "3",
+    }
+
+
+def test_generation_metadata_records_selected_openai_model():
+    with patch.dict(
+        os.environ,
+        {
+            "LITE_LLM_ENABLE": "true",
+            "LITE_LLM_PROVIDER": "openai",
+            "LITE_LLM_MODEL_OPENAI": "gpt-5.5",
+        },
+    ):
+        metadata = main._generation_metadata()
+
+    assert metadata == {
+        "route": "litellm_gateway",
+        "provider": "openai",
+        "model": "gpt-5.5",
         "prompt_version": "3",
     }
 

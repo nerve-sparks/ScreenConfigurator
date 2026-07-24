@@ -51,13 +51,31 @@ def _published_query(agent_id: str) -> dict:
 
 
 def ensure_indexes() -> None:
-    """Create indexes that enforce version and publish idempotency."""
+    """Create indexes that support legacy and project-owned screens."""
     _collection.create_index(
-        [("agent_id", ASCENDING), ("version", ASCENDING)], unique=True
+        [
+            ("agent_id", ASCENDING),
+            ("screen_id", ASCENDING),
+            ("version", ASCENDING),
+        ],
+        unique=True,
+        partialFilterExpression={"version": {"$type": "number"}},
     )
-    _collection.create_index([("agent_id", ASCENDING), ("status", ASCENDING)])
     _collection.create_index(
-        [("agent_id", ASCENDING), ("draft_revision", ASCENDING)],
+        [
+            ("agent_id", ASCENDING),
+            ("screen_id", ASCENDING),
+            ("status", ASCENDING),
+        ],
+        unique=True,
+        partialFilterExpression={"status": "draft"},
+    )
+    _collection.create_index(
+        [
+            ("agent_id", ASCENDING),
+            ("screen_id", ASCENDING),
+            ("draft_revision", ASCENDING),
+        ],
         unique=True,
         partialFilterExpression={
             "status": "published",
@@ -219,8 +237,20 @@ def insert_draft(
 
 
 def get_draft(agent_id: str) -> Optional[dict]:
+    document = _collection.find_one(
+        {"agent_id": agent_id, "screen_id": agent_id, "status": "draft"},
+        projection={"_id": False},
+    )
+    if document is not None:
+        return document
+    # Read compatibility for pre-screen_id documents before startup migration.
     return _collection.find_one(
-        {"agent_id": agent_id, "status": "draft"}, projection={"_id": False}
+        {
+            "agent_id": agent_id,
+            "screen_id": {"$exists": False},
+            "status": "draft",
+        },
+        projection={"_id": False},
     )
 
 

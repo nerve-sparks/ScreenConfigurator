@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
+from content_manifest import validate_screen_manifest
 from db import (
     duplicate_screen,
     ensure_indexes,
@@ -33,14 +34,41 @@ from db import (
     slugify,
 )
 from llm import (
+    SCREEN_PLAN_PROMPT_VERSION,
     PROMPT_VERSION,
     LLMConfigurationError,
     LLMOutputError,
     LLMProviderError,
     LLMTimeoutError,
+    gateway_generation_target,
+    generate_content_schema,
     generate_schema,
+    generate_screen_plan,
 )
 from manifest_migrations import upgrade_legacy_layout
+from project_db import (
+    MAX_PROJECT_SCREENS,
+    add_screen_to_project,
+    create_project,
+    duplicate_agent_project,
+    duplicate_project_screen,
+    ensure_project_indexes,
+    get_project,
+    get_project_screen_draft,
+    get_release,
+    insert_project_screen_draft,
+    list_project_screens,
+    list_projects,
+    list_releases,
+    project_exists,
+    project_screen_exists,
+    publish_project_release,
+    restore_release,
+    save_project,
+    save_project_screen_draft,
+    set_project_archived,
+    set_project_screen_archived,
+)
 from validation import validate_manifest
 
 logger = logging.getLogger(__name__)
@@ -49,6 +77,8 @@ logger = logging.getLogger(__name__)
 FRONTEND_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
 ]
 
 
@@ -59,11 +89,25 @@ async def lifespan(_: FastAPI):
     # so we fail fast (with a clear message) rather than run without it.
     try:
         ensure_indexes()
+        ensure_project_indexes()
     except PyMongoError as exc:
         raise RuntimeError(
             f"Could not reach MongoDB at startup ({exc}). Check MONGODB_URI "
             "in backend/.env and make sure MongoDB is running."
         ) from exc
+    try:
+        target = _generation_metadata()
+        logger.info(
+            "LLM generation configured route=%s provider=%s model=%s",
+            target["route"],
+            target["provider"],
+            target["model"],
+        )
+    except LLMConfigurationError:
+        logger.warning(
+            "LLM generation configuration is invalid; generation requests "
+            "will return a safe configuration error."
+        )
     yield
 
 
@@ -200,6 +244,52 @@ class ArchiveScreenRequest(BaseModel):
     archived: bool
 
 
+class CreateAgentProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=5000)
+    presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
+
+
+class SaveAgentProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=5000)
+    presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
+    screen_ids: list[str] = Field(max_length=MAX_PROJECT_SCREENS)
+    start_screen_id: Optional[str] = None
+    revision: str = Field(min_length=1, max_length=64)
+
+
+class GenerateScreenPlanRequest(BaseModel):
+    description: str = Field(default="", max_length=5000)
+
+
+class GenerateProjectScreenRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    screen_id: Optional[str] = None
+    screen_type: Literal["form", "content"]
+    purpose: Literal["intake", "settings", "information", "confirmation"]
+    description: str = Field(min_length=1, max_length=5000)
+
+
+class SaveProjectScreenRequest(BaseModel):
+    screen_type: Literal["form", "content"]
+    purpose: Literal["intake", "settings", "information", "confirmation"]
+    manifest: dict
+    approved_manifest: Optional[dict] = None
+    description: str = Field(default="", max_length=5000)
+    name: str = Field(min_length=1, max_length=80)
+    source: Literal["llm", "manual"] = "llm"
+    presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
+    editor_state: dict = Field(default_factory=dict)
+    generation: dict = Field(default_factory=dict)
+
+
+class PublishAgentProjectRequest(BaseModel):
+    project_revision: str = Field(min_length=1, max_length=64)
+    screen_revisions: dict[str, str]
+    change_summary: str = Field(min_length=1, max_length=240)
+
+
 def _validated_agent_id(agent_id: str) -> str:
     normalized = slugify(agent_id)
     if not normalized or normalized != agent_id:
@@ -218,19 +308,699 @@ def _generation_metadata() -> dict:
         "yes",
         "on",
     }
-    model = (
-        os.getenv("LITE_LLM_MODEL_GEMINI", "")
-        if gateway_enabled
-        else os.getenv("MODEL", "")
-    ).strip()
-    provider = "litellm_gateway" if gateway_enabled else (
-        model.split("/", 1)[0] if "/" in model else "litellm"
-    )
+    if gateway_enabled:
+        target = gateway_generation_target()
+        provider = target["provider"]
+        model = target["model"]
+        route = target["route"]
+    else:
+        model = os.getenv("MODEL", "").strip()
+        provider = model.split("/", 1)[0] if "/" in model else "litellm"
+        route = "direct_provider"
     return {
+        "route": route,
         "provider": provider,
         "model": model,
         "prompt_version": PROMPT_VERSION,
     }
+
+
+def _validated_screen_id(screen_id: str) -> str:
+    normalized = slugify(screen_id)
+    if not normalized or normalized != screen_id:
+        raise HTTPException(
+            status_code=422,
+            detail="screen_id must be a lowercase kebab-case identifier.",
+        )
+    return normalized
+
+
+def _validate_screen_purpose(screen_type: str, purpose: str) -> None:
+    allowed = (
+        {"intake", "settings"}
+        if screen_type == "form"
+        else {"information", "confirmation"}
+    )
+    if purpose not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=f"purpose '{purpose}' is not valid for {screen_type} screens.",
+        )
+
+
+def _prepared_screen_manifest(screen_type: str, manifest: dict) -> dict:
+    prepared = upgrade_legacy_layout(manifest) if screen_type == "form" else manifest
+    valid, errors = validate_screen_manifest(screen_type, prepared)
+    if not valid:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Screen manifest failed validation.", "errors": errors},
+        )
+    return prepared
+
+
+def _raise_generation_http_error(exc: Exception) -> None:
+    if isinstance(exc, LLMConfigurationError):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AI generation is not configured. Contact the application "
+                "administrator."
+            ),
+        ) from exc
+    if isinstance(exc, LLMTimeoutError):
+        raise HTTPException(
+            status_code=504,
+            detail="AI generation timed out. Please try again.",
+        ) from exc
+    if isinstance(exc, LLMOutputError):
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "AI provider returned an invalid definition after one correction "
+                "attempt. Please try again."
+            ),
+        ) from exc
+    if isinstance(exc, LLMProviderError):
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider request failed. Please try again.",
+        ) from exc
+    raise HTTPException(
+        status_code=500,
+        detail="AI generation failed unexpectedly. Please try again.",
+    ) from exc
+
+
+def _project_payload(project: dict) -> dict:
+    screens = list_project_screens(project["agent_id"], include_archived=True)
+    summaries = []
+    for screen in screens:
+        summaries.append(
+            {
+                key: screen.get(key)
+                for key in (
+                    "agent_id",
+                    "screen_id",
+                    "screen_type",
+                    "purpose",
+                    "name",
+                    "description",
+                    "presentation",
+                    "revision",
+                    "validation_errors",
+                    "is_archived",
+                    "created_at",
+                    "updated_at",
+                )
+            }
+            | {"approved": screen.get("approved_manifest") is not None}
+        )
+    payload = dict(project)
+    payload["screens"] = summaries
+    payload["release_count"] = len(list_releases(project["agent_id"]))
+    return payload
+
+
+@app.post("/agents", status_code=201)
+def create_agent_project(request: CreateAgentProjectRequest) -> dict:
+    name = request.name.strip()
+    agent_id = slugify(name)
+    if not agent_id:
+        raise HTTPException(status_code=422, detail="name must contain letters or digits")
+    try:
+        if project_exists(agent_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"An agent project with ID '{agent_id}' already exists.",
+            )
+        project = create_project(
+            agent_id,
+            name,
+            request.description.strip(),
+            request.presentation.model_dump(),
+        )
+    except HTTPException:
+        raise
+    except DuplicateKeyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An agent project with ID '{agent_id}' already exists.",
+        ) from exc
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    return _project_payload(project)
+
+
+@app.get("/agents")
+def get_agent_projects() -> dict:
+    try:
+        return {"agents": list_projects()}
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+
+@app.get("/agents/{agent_id}")
+def get_agent_project(agent_id: str) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        project = get_project(agent_id)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No agent project found for '{agent_id}'.",
+        )
+    return _project_payload(project)
+
+
+@app.put("/agents/{agent_id}/draft")
+def put_agent_project_draft(
+    agent_id: str, request: SaveAgentProjectRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    screen_ids = [_validated_screen_id(value) for value in request.screen_ids]
+    if len(screen_ids) != len(set(screen_ids)):
+        raise HTTPException(status_code=422, detail="screen_ids must be unique.")
+    if screen_ids and request.start_screen_id not in screen_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="start_screen_id must name one active screen.",
+        )
+    if not screen_ids and request.start_screen_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="start_screen_id must be null when the project has no screens.",
+        )
+    try:
+        current = get_project(agent_id)
+        if current is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        if set(screen_ids) != set(current.get("screen_ids", [])):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "screen_ids may reorder active screens but cannot add or remove "
+                    "them. Use the screen create or archive APIs."
+                ),
+            )
+        project = save_project(
+            agent_id,
+            name=request.name.strip(),
+            description=request.description.strip(),
+            presentation=request.presentation.model_dump(),
+            screen_ids=screen_ids,
+            start_screen_id=request.start_screen_id,
+            expected_revision=request.revision,
+        )
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if project is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The agent project changed. Reload it before saving again.",
+        )
+    return _project_payload(project)
+
+
+@app.post("/agents/{agent_id}/screen-plan/generate")
+def generate_agent_screen_plan(
+    agent_id: str, request: GenerateScreenPlanRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        project = get_project(agent_id)
+        if project is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        description = request.description.strip() or project.get("description", "").strip()
+        if not description:
+            raise HTTPException(
+                status_code=422,
+                detail="An agent description is required to generate a screen plan.",
+            )
+        existing = list_project_screens(agent_id, include_archived=False)
+        plan = generate_screen_plan(description, existing)
+    except HTTPException:
+        raise
+    except (LLMConfigurationError, LLMTimeoutError, LLMOutputError, LLMProviderError) as exc:
+        _raise_generation_http_error(exc)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    except Exception as exc:
+        logger.error("Unexpected screen-plan failure (%s).", type(exc).__name__)
+        _raise_generation_http_error(exc)
+    return {
+        **plan,
+        "generation": _generation_metadata()
+        | {"prompt_version": SCREEN_PLAN_PROMPT_VERSION},
+    }
+
+
+@app.post("/agents/{agent_id}/screens/generate")
+def generate_agent_project_screen(
+    agent_id: str, request: GenerateProjectScreenRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    _validate_screen_purpose(request.screen_type, request.purpose)
+    screen_id = (
+        _validated_screen_id(request.screen_id)
+        if request.screen_id is not None
+        else slugify(request.name.strip())
+    )
+    if not screen_id:
+        raise HTTPException(status_code=422, detail="name must contain letters or digits")
+    try:
+        project = get_project(agent_id)
+        if project is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        if request.screen_id is None and project_screen_exists(agent_id, screen_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"A screen with ID '{screen_id}' already exists in this agent.",
+            )
+        existing = list_project_screens(agent_id, include_archived=False)
+        existing_context = "; ".join(
+            f"{item.get('name', item['screen_id'])}: {item.get('description', '')}"
+            for item in existing
+        )
+        brief = (
+            f"Agent: {project['name']}\n"
+            f"Agent description: {project.get('description', '')}\n"
+            f"Screen name: {request.name.strip()}\n"
+            f"Screen purpose: {request.purpose}\n"
+            f"Screen description: {request.description.strip()}\n"
+            f"Existing screens to avoid duplicating: {existing_context or 'none'}"
+        )
+        manifest = (
+            generate_schema(brief)
+            if request.screen_type == "form"
+            else generate_content_schema(brief)
+        )
+    except HTTPException:
+        raise
+    except (LLMConfigurationError, LLMTimeoutError, LLMOutputError, LLMProviderError) as exc:
+        _raise_generation_http_error(exc)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    except Exception as exc:
+        logger.error("Unexpected screen generation failure (%s).", type(exc).__name__)
+        _raise_generation_http_error(exc)
+    return {
+        "screen_id": screen_id,
+        "screen_type": request.screen_type,
+        "purpose": request.purpose,
+        "manifest": manifest,
+        "generation": _generation_metadata(),
+    }
+
+
+def _persist_project_screen(
+    agent_id: str,
+    screen_id: str,
+    request: SaveProjectScreenRequest,
+    *,
+    create: bool,
+) -> dict:
+    _validate_screen_purpose(request.screen_type, request.purpose)
+    manifest = _prepared_screen_manifest(request.screen_type, request.manifest)
+    approved = None
+    if request.approved_manifest is not None:
+        approved = _prepared_screen_manifest(
+            request.screen_type, request.approved_manifest
+        )
+    kwargs = {
+        "agent_id": agent_id,
+        "screen_id": screen_id,
+        "manifest": manifest,
+        "approved_manifest": approved,
+        "name": request.name.strip(),
+        "description": request.description.strip(),
+        "source": request.source,
+        "presentation": request.presentation.model_dump(),
+        "editor_state": request.editor_state,
+        "generation": request.generation,
+        "validation_errors": [],
+    }
+    if create:
+        return insert_project_screen_draft(
+            screen_type=request.screen_type,
+            purpose=request.purpose,
+            **kwargs,
+        )
+    current = get_project_screen_draft(agent_id, screen_id)
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No screen draft found for '{screen_id}'.",
+        )
+    if current.get("screen_type", "form") != request.screen_type:
+        raise HTTPException(
+            status_code=422,
+            detail="screen_type cannot be changed after screen creation.",
+        )
+    if current.get("purpose", "intake") != request.purpose:
+        raise HTTPException(
+            status_code=422,
+            detail="purpose cannot be changed after screen creation.",
+        )
+    return save_project_screen_draft(**kwargs) or {}
+
+
+@app.post("/agents/{agent_id}/screens/{screen_id}/draft", status_code=201)
+def create_agent_project_screen_draft(
+    agent_id: str, screen_id: str, request: SaveProjectScreenRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    screen_id = _validated_screen_id(screen_id)
+    if slugify(request.name.strip()) != screen_id:
+        raise HTTPException(
+            status_code=422,
+            detail="screen_id must be derived from the supplied screen name.",
+        )
+    try:
+        if not project_exists(agent_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        return _persist_project_screen(agent_id, screen_id, request, create=True)
+    except HTTPException:
+        raise
+    except (DuplicateKeyError, ValueError) as exc:
+        status = 409 if isinstance(exc, DuplicateKeyError) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+
+@app.put("/agents/{agent_id}/screens/{screen_id}/draft")
+def put_agent_project_screen_draft(
+    agent_id: str, screen_id: str, request: SaveProjectScreenRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    screen_id = _validated_screen_id(screen_id)
+    try:
+        draft = _persist_project_screen(agent_id, screen_id, request, create=False)
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    return draft
+
+
+@app.get("/agents/{agent_id}/screens/{screen_id}/draft")
+def get_agent_project_screen_draft(agent_id: str, screen_id: str) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    screen_id = _validated_screen_id(screen_id)
+    try:
+        draft = get_project_screen_draft(agent_id, screen_id)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No screen draft found for '{screen_id}'.",
+        )
+    if draft.get("screen_type", "form") == "form":
+        draft["draft_manifest"] = upgrade_legacy_layout(draft["draft_manifest"])
+        if draft.get("approved_manifest"):
+            draft["approved_manifest"] = upgrade_legacy_layout(
+                draft["approved_manifest"]
+            )
+    return draft
+
+
+@app.post(
+    "/agents/{agent_id}/screens/{screen_id}/duplicate",
+    status_code=201,
+)
+def duplicate_agent_project_screen(
+    agent_id: str,
+    screen_id: str,
+    request: DuplicateScreenRequest,
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    screen_id = _validated_screen_id(screen_id)
+    name = request.name.strip()
+    target_screen_id = slugify(name)
+    if not target_screen_id:
+        raise HTTPException(status_code=422, detail="name must contain letters or digits")
+    try:
+        if project_screen_exists(agent_id, target_screen_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"A screen with ID '{target_screen_id}' already exists.",
+            )
+        draft = duplicate_project_screen(
+            agent_id, screen_id, target_screen_id, name
+        )
+    except HTTPException:
+        raise
+    except (DuplicateKeyError, ValueError) as exc:
+        status = 409 if isinstance(exc, DuplicateKeyError) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if not draft:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No screen draft found for '{screen_id}'.",
+        )
+    return draft
+
+
+@app.patch("/agents/{agent_id}/screens/{screen_id}/archive")
+def archive_agent_project_screen(
+    agent_id: str, screen_id: str, request: ArchiveScreenRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    screen_id = _validated_screen_id(screen_id)
+    try:
+        draft = set_project_screen_archived(agent_id, screen_id, request.archived)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No screen draft found for '{screen_id}'.",
+        )
+    return {
+        "agent_id": agent_id,
+        "screen_id": screen_id,
+        "is_archived": bool(draft.get("is_archived")),
+    }
+
+
+@app.post("/agents/{agent_id}/publish")
+def publish_agent_project(
+    agent_id: str, request: PublishAgentProjectRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    summary = request.change_summary.strip()
+    if not summary:
+        raise HTTPException(status_code=422, detail="change_summary must not be empty")
+    try:
+        project = get_project(agent_id)
+        if project is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        if project["revision"] != request.project_revision:
+            raise HTTPException(
+                status_code=409,
+                detail="The agent project changed after preview. Reload and try again.",
+            )
+        screen_ids = list(project.get("screen_ids", []))
+        if not screen_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="An agent release must contain at least one active screen.",
+            )
+        if len(screen_ids) != len(set(screen_ids)):
+            raise HTTPException(
+                status_code=422,
+                detail="The project screen order contains duplicate screen IDs.",
+            )
+        if project.get("start_screen_id") not in screen_ids:
+            raise HTTPException(
+                status_code=422,
+                detail="The project start screen is missing or inactive.",
+            )
+        if set(request.screen_revisions) != set(screen_ids):
+            raise HTTPException(
+                status_code=422,
+                detail="screen_revisions must contain every active screen exactly once.",
+            )
+        screens = []
+        for screen_id in screen_ids:
+            screen = get_project_screen_draft(agent_id, screen_id)
+            if screen is None or screen.get("is_archived"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Active screen '{screen_id}' has no usable draft.",
+                )
+            if screen["revision"] != request.screen_revisions[screen_id]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Screen '{screen_id}' changed after preview. Reload and "
+                        "try again."
+                    ),
+                )
+            approved = screen.get("approved_manifest")
+            if approved is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Screen '{screen_id}' has not been approved.",
+                )
+            _prepared_screen_manifest(
+                screen.get("screen_type", "form"), approved
+            )
+            screens.append(screen)
+        release = publish_project_release(
+            project=project,
+            screens=screens,
+            change_summary=summary,
+        )
+    except HTTPException:
+        raise
+    except (PyMongoError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    return {
+        "agent_id": agent_id,
+        "version": release["version"],
+        "status": "published",
+    }
+
+
+@app.get("/agents/{agent_id}/releases")
+def get_agent_releases(agent_id: str) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        if not project_exists(agent_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        releases = list_releases(agent_id)
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    return {"agent_id": agent_id, "releases": releases}
+
+
+@app.get("/agents/{agent_id}/releases/{version}")
+def get_agent_release(agent_id: str, version: int) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    if version < 1:
+        raise HTTPException(status_code=422, detail="version must be at least 1")
+    try:
+        release = get_release(agent_id, version)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if release is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Release {version} was not found for '{agent_id}'.",
+        )
+    return release
+
+
+@app.get("/agents/{agent_id}/published")
+def get_published_agent_release(
+    agent_id: str, version: Optional[int] = None
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        release = get_release(agent_id, version)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if release is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No published agent release found for '{agent_id}'.",
+        )
+    return release
+
+
+@app.post("/agents/{agent_id}/releases/{version}/restore")
+def restore_agent_release(agent_id: str, version: int) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    if version < 1:
+        raise HTTPException(status_code=422, detail="version must be at least 1")
+    try:
+        project = restore_release(agent_id, version)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Release {version} was not found for '{agent_id}'.",
+        )
+    return _project_payload(project)
+
+
+@app.patch("/agents/{agent_id}/archive")
+def archive_agent_project(
+    agent_id: str, request: ArchiveScreenRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    try:
+        project = set_project_archived(agent_id, request.archived)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No agent project found for '{agent_id}'.",
+        )
+    return {
+        "agent_id": agent_id,
+        "is_archived": bool(project.get("is_archived")),
+        "archived_at": project.get("archived_at"),
+    }
+
+
+@app.post("/agents/{agent_id}/duplicate", status_code=201)
+def duplicate_saved_agent_project(
+    agent_id: str, request: DuplicateScreenRequest
+) -> dict:
+    agent_id = _validated_agent_id(agent_id)
+    name = request.name.strip()
+    target_agent_id = slugify(name)
+    if not target_agent_id:
+        raise HTTPException(status_code=422, detail="name must contain letters or digits")
+    try:
+        project = duplicate_agent_project(agent_id, target_agent_id, name)
+    except DuplicateKeyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An agent project with ID '{target_agent_id}' already exists.",
+        ) from exc
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if not project:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No agent project found for '{agent_id}'.",
+        )
+    return _project_payload(project)
 
 
 @app.post("/screens")

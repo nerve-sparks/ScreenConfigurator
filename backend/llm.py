@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from litellm import Router, Timeout as LiteLLMTimeout, completion
 from litellm import supports_response_schema
 
+from content_manifest import CONTENT_META_SCHEMA, validate_content_manifest
 from meta_schema import MAX_INPUT_FIELDS, META_SCHEMA
 from validation import validate_manifest
 
@@ -43,7 +44,11 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 logger = logging.getLogger(__name__)
 
-_GATEWAY_ALIAS = "gemini"
+_GATEWAY_ALIAS = "manifest-generator"
+_GATEWAY_MODEL_SETTINGS = {
+    "gemini": "LITE_LLM_MODEL_GEMINI",
+    "openai": "LITE_LLM_MODEL_OPENAI",
+}
 _MAX_TOKENS = 8000
 _DEFAULT_TIMEOUT_SECONDS = 45.0
 _MIN_TIMEOUT_SECONDS = 1.0
@@ -53,6 +58,8 @@ _MAX_RETRY_OUTPUT_CHARS = 12_000
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
 PROMPT_VERSION = "3"
+SCREEN_PLAN_PROMPT_VERSION = "1"
+CONTENT_PROMPT_VERSION = "1"
 
 _router: Router | None = None
 
@@ -172,8 +179,29 @@ def _required_gateway_setting(name: str) -> str:
     return value
 
 
+def _gateway_provider() -> str:
+    """Return the application-wide gateway provider selected by the operator."""
+    provider = os.getenv("LITE_LLM_PROVIDER", "gemini").strip().lower() or "gemini"
+    if provider not in _GATEWAY_MODEL_SETTINGS:
+        supported = ", ".join(sorted(_GATEWAY_MODEL_SETTINGS))
+        raise LLMConfigurationError(
+            f"LITE_LLM_PROVIDER must be one of: {supported}."
+        )
+    return provider
+
+
 def _gateway_model() -> str:
-    return _required_gateway_setting("LITE_LLM_MODEL_GEMINI")
+    """Resolve the selected provider to its configured gateway model name."""
+    return _required_gateway_setting(_GATEWAY_MODEL_SETTINGS[_gateway_provider()])
+
+
+def gateway_generation_target() -> dict[str, str]:
+    """Return safe gateway provenance without credentials or connection details."""
+    return {
+        "route": "litellm_gateway",
+        "provider": _gateway_provider(),
+        "model": _gateway_model(),
+    }
 
 
 def _openai_compatible_model(model: str) -> str:
@@ -185,12 +213,18 @@ def _get_router() -> Router:
     """Build the shared organization-gateway router once and reuse it."""
     global _router
     if _router is None:
+        target = gateway_generation_target()
+        logger.info(
+            "Configuring LiteLLM gateway provider=%s model=%s",
+            target["provider"],
+            target["model"],
+        )
         _router = Router(
             model_list=[
                 {
                     "model_name": _GATEWAY_ALIAS,
                     "litellm_params": {
-                        "model": _openai_compatible_model(_gateway_model()),
+                        "model": _openai_compatible_model(target["model"]),
                         "api_base": _required_gateway_setting("LITE_LLM_BASE_URL"),
                         "api_key": _required_gateway_setting("LITE_LLM_KEY"),
                     },
@@ -323,16 +357,30 @@ def _is_gemini_model(model: str) -> bool:
     return "gemini" in model.strip().lower()
 
 
-def _response_format_for_model(model: str) -> dict:
+def _requires_application_validated_json(model: str) -> bool:
+    """Return models that reject rules in the complete manifest meta-schema."""
+    normalized = model.strip().lower()
+    if _is_gemini_model(normalized):
+        return True
+    if normalized.startswith("openai/"):
+        normalized = normalized.removeprefix("openai/")
+    return normalized == "gpt-5.5"
+
+
+def _response_format_for_model(
+    model: str,
+    schema: dict = META_SCHEMA,
+    schema_name: str = "agent_screen_manifest",
+) -> dict:
     """Choose a provider-compatible JSON response mode.
 
-    Gemini supports JSON output, but its structured-output implementation
-    rejects parts of the application's full draft-2020-12 meta-schema. The
-    backend remains the authoritative schema and safety validation gate.
+    Some providers support JSON output but reject parts of the application's
+    full draft-2020-12 meta-schema. The backend remains the authoritative
+    schema and safety validation gate.
     """
-    if _is_gemini_model(model):
+    if _requires_application_validated_json(model):
         logger.info(
-            "Using JSON-object response mode for Gemini model %s; "
+            "Using JSON-object response mode for model %s; "
             "backend manifest validation remains authoritative.",
             model,
         )
@@ -357,9 +405,9 @@ def _response_format_for_model(model: str) -> dict:
     return {
         "type": "json_schema",
         "json_schema": {
-            "name": "agent_screen_manifest",
+            "name": schema_name,
             "strict": True,
-            "schema": deepcopy(META_SCHEMA),
+            "schema": deepcopy(schema),
         },
     }
 
@@ -393,21 +441,39 @@ def _retry_messages(
 
 
 def _completion_response(
-    description: str, messages: list[dict[str, str]], attempt: int
+    description: str,
+    messages: list[dict[str, str]],
+    attempt: int,
+    *,
+    response_schema: dict = META_SCHEMA,
+    schema_name: str = "agent_screen_manifest",
+    observation_name: str = "manifest",
 ):
     gateway_enabled = _gateway_enabled()
-    model = _gateway_model() if gateway_enabled else _direct_model()
+    if gateway_enabled:
+        target = gateway_generation_target()
+        model = target["model"]
+        logger.info(
+            "Generating manifest through provider=%s model=%s",
+            target["provider"],
+            model,
+        )
+    else:
+        model = _direct_model()
     common = {
         "messages": messages,
-        "response_format": _response_format_for_model(model),
-        "temperature": 0.1,
+        "response_format": _response_format_for_model(
+            model, response_schema, schema_name
+        ),
         "max_tokens": _MAX_TOKENS,
         "timeout": _generation_timeout(),
     }
+    if not (gateway_enabled and target["provider"] == "openai"):
+        common["temperature"] = 0.1
 
     if gateway_enabled:
         with _generation_observation(
-            name="litellm-gateway-manifest",
+            name=f"litellm-gateway-{observation_name}",
             model=model,
             user_prompt=description,
             attempt=attempt,
@@ -419,7 +485,7 @@ def _completion_response(
     else:
         model = _direct_model()
         with _generation_observation(
-            name="litellm-direct-manifest",
+            name=f"litellm-direct-{observation_name}",
             model=model,
             user_prompt=description,
             attempt=attempt,
@@ -497,6 +563,224 @@ def generate_schema(description: str) -> dict:
     summary = "; ".join(errors[:5]) or "manifest validation failed"
     raise LLMOutputError(
         "LLM returned an invalid manifest after one correction attempt: " + summary
+    )
+
+
+SCREEN_PLAN_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "screens": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 80,
+                    },
+                    "screen_type": {
+                        "type": "string",
+                        "enum": ["form", "content"],
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "enum": [
+                            "intake",
+                            "settings",
+                            "information",
+                            "confirmation",
+                        ],
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                    },
+                },
+                "required": ["name", "screen_type", "purpose", "description"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["screens"],
+    "additionalProperties": False,
+}
+
+SCREEN_PLAN_PROMPT = """\
+You plan the safe published user interface for one AI agent application.
+Return one JSON object with a "screens" array. Propose only screens that help
+the published user provide information or understand the ordered experience.
+
+Every screen must contain:
+- "name": a short human-readable name.
+- "screen_type": "form" or "content".
+- "purpose": "intake" or "settings" for form screens; "information" or
+  "confirmation" for content screens.
+- "description": a concise generation brief for that one screen.
+
+Use the smallest useful collection, normally two to six screens and never more
+than twenty. Put screens in the order the user should experience them. Do not
+invent IDs, routes, permissions, credentials, tools, dashboards, chat, result
+history, database bindings, HTML, scripts, CSS, or conditional navigation.
+Return strict JSON only.
+"""
+
+CONTENT_SCREEN_PROMPT = """\
+You create one safe, non-interactive content screen for an AI agent.
+Return exactly one JSON object with a "blocks" array.
+
+Allowed blocks:
+- {"id":"unique-id","type":"heading","text":"Heading","level":2}
+- {"id":"unique-id","type":"paragraph","text":"Plain text"}
+- {"id":"unique-id","type":"divider"}
+- {"id":"unique-id","type":"callout","text":"Important text","tone":"information"}
+- {"id":"unique-id","type":"section","title":"Title","description":"Optional",
+   "children":[...heading, paragraph, divider, or callout blocks...]}
+
+Block IDs must be unique lowercase kebab-case and no longer than 64 characters.
+Heading levels may be 2, 3, or 4. Callout tones may be information, success, or
+warning. Keep copy concise. Do not emit fields, forms, nested sections, HTML,
+Markdown, scripts, CSS, remote content, IDs outside block IDs, permissions, or
+credentials. Return strict JSON only.
+"""
+
+
+def _screen_plan_errors(value) -> list[str]:
+    from jsonschema import Draft202012Validator
+
+    structural = [
+        f"structural: {error.json_path}: {error.message}"
+        for error in sorted(
+            Draft202012Validator(SCREEN_PLAN_SCHEMA).iter_errors(value),
+            key=lambda error: error.json_path,
+        )
+    ]
+    if structural:
+        return structural
+    errors: list[str] = []
+    seen_names: set[str] = set()
+    for index, screen in enumerate(value["screens"]):
+        normalized = re.sub(
+            r"[^a-z0-9]+", "-", screen["name"].strip().lower()
+        ).strip("-")
+        if not normalized:
+            errors.append(f"screens[{index}].name must contain letters or digits")
+        if normalized in seen_names:
+            errors.append(
+                f"screens[{index}].name creates duplicate identifier '{normalized}'"
+            )
+        seen_names.add(normalized)
+        valid_purposes = (
+            {"intake", "settings"}
+            if screen["screen_type"] == "form"
+            else {"information", "confirmation"}
+        )
+        if screen["purpose"] not in valid_purposes:
+            errors.append(
+                f"screens[{index}].purpose is not valid for "
+                f"{screen['screen_type']} screens"
+            )
+    return errors
+
+
+def _generate_contract(
+    *,
+    description: str,
+    system_prompt: str,
+    response_schema: dict,
+    schema_name: str,
+    observation_name: str,
+    validator,
+) -> dict:
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": description},
+    ]
+    errors: list[str] = []
+    for attempt in range(1, _MAX_GENERATION_ATTEMPTS + 1):
+        try:
+            raw = _completion_response(
+                description,
+                messages,
+                attempt,
+                response_schema=response_schema,
+                schema_name=schema_name,
+                observation_name=observation_name,
+            )
+        except LLMConfigurationError:
+            raise
+        except (LiteLLMTimeout, TimeoutError) as exc:
+            raise LLMTimeoutError("LLM generation timed out.") from exc
+        except Exception as exc:
+            logger.error(
+                "LiteLLM provider request failed for %s on attempt %s (%s).",
+                observation_name,
+                attempt,
+                type(exc).__name__,
+            )
+            raise LLMProviderError("LLM provider request failed.") from exc
+
+        try:
+            parsed = _loads_llm_json(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("LLM response must be one JSON object.")
+            errors = validator(parsed)
+        except ValueError as exc:
+            errors = [str(exc)]
+
+        if not errors:
+            return parsed
+        if attempt < _MAX_GENERATION_ATTEMPTS:
+            messages = _retry_messages(messages, raw, errors)
+    summary = "; ".join(errors[:5]) or "validation failed"
+    raise LLMOutputError(
+        f"LLM returned invalid {observation_name} output after one correction "
+        f"attempt: {summary}"
+    )
+
+
+def generate_screen_plan(description: str, existing_screens: list[dict]) -> dict:
+    """Generate a validated, identifier-free screen plan."""
+    context = {
+        "agent_description": description,
+        "existing_screens": [
+            {
+                "name": screen.get("name", ""),
+                "screen_type": screen.get("screen_type", "form"),
+                "purpose": screen.get("purpose", "intake"),
+                "description": screen.get("description", ""),
+            }
+            for screen in existing_screens
+        ],
+    }
+    return _generate_contract(
+        description=json.dumps(context, ensure_ascii=True),
+        system_prompt=SCREEN_PLAN_PROMPT,
+        response_schema=SCREEN_PLAN_SCHEMA,
+        schema_name="agent_screen_plan",
+        observation_name="screen-plan",
+        validator=_screen_plan_errors,
+    )
+
+
+def generate_content_schema(description: str) -> dict:
+    """Generate and strictly validate one safe content manifest."""
+
+    def content_errors(value) -> list[str]:
+        valid, errors = validate_content_manifest(value)
+        return [] if valid else errors
+
+    return _generate_contract(
+        description=description,
+        system_prompt=CONTENT_SCREEN_PROMPT,
+        response_schema=CONTENT_META_SCHEMA,
+        schema_name="agent_content_manifest",
+        observation_name="content-manifest",
+        validator=content_errors,
     )
 
 

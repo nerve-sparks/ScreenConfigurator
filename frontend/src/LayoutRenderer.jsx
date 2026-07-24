@@ -1,6 +1,6 @@
 import { createElement } from 'react'
 
-function ContentBlock({ block, propertiesByName }) {
+export function ContentBlock({ block, propertiesByName = new Map() }) {
   if (block.type === 'field') {
     const property = propertiesByName.get(block.field)
     return property
@@ -69,6 +69,21 @@ function ContentBlock({ block, propertiesByName }) {
   }
 
   return null
+}
+
+export function ContentBlocks({ blocks = [] }) {
+  const propertiesByName = new Map()
+  return (
+    <div className="safe-layout-blocks content-screen-blocks">
+      {blocks.map((block) => (
+        <ContentBlock
+          key={block.id}
+          block={block}
+          propertiesByName={propertiesByName}
+        />
+      ))}
+    </div>
+  )
 }
 
 export function LayoutObjectFieldTemplate({ properties, blocks = [] }) {

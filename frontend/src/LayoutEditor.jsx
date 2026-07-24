@@ -324,6 +324,7 @@ export default function LayoutEditor({
   disabled = false,
   activeGroupId = null,
   onActiveGroupChange = IGNORE_GROUP_CHANGE,
+  showApproval = true,
 }) {
   const roots = useMemo(() => layoutRoots(draft.manifest), [draft.manifest])
   const [selectedId, setSelectedId] = useState(null)
@@ -363,19 +364,21 @@ export default function LayoutEditor({
           <h2 id="layout-editor-title">Arrange the screen safely</h2>
           <p>Mix helpful content with approved inputs. HTML, scripts, and custom CSS are not accepted.</p>
         </div>
-        <div className="layout-approval">
-          <span className={`badge ${draft.layoutApproved ? 'badge-success' : 'badge-info'}`}>
-            {draft.layoutApproved ? 'Layout approved' : 'AI suggested'}
-          </span>
-          <button
-            type="button"
-            className="btn btn-success"
-            onClick={() => onChange((current) => approveLayout(current))}
-            disabled={disabled || draft.layoutApproved}
-          >
-            Approve layout
-          </button>
-        </div>
+        {showApproval && (
+          <div className="layout-approval">
+            <span className={`badge ${draft.layoutApproved ? 'badge-success' : 'badge-info'}`}>
+              {draft.layoutApproved ? 'Layout approved' : 'AI suggested'}
+            </span>
+            <button
+              type="button"
+              className="btn btn-success"
+              onClick={() => onChange((current) => approveLayout(current))}
+              disabled={disabled || draft.layoutApproved}
+            >
+              Approve layout
+            </button>
+          </div>
+        )}
       </header>
 
       {roots.length > 1 && (

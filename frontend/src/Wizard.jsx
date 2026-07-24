@@ -25,12 +25,20 @@ export default function Wizard({
   submitLabel = 'Submit',
   activeGroupId,
   onActiveGroupChange,
+  formData,
+  onChange,
 }) {
   const groups = Array.isArray(manifest?.ui_hints?.groups)
     ? manifest.ui_hints.groups
     : []
   const [stepIndex, setStepIndex] = useState(0)
-  const [stepData, setStepData] = useState(() => groups.map(() => ({})))
+  const [stepData, setStepData] = useState(() => groups.map((group) => {
+    const values = {}
+    for (const field of group.fields ?? []) {
+      if (formData?.[field] !== undefined) values[field] = formData[field]
+    }
+    return values
+  }))
   const [showingSummary, setShowingSummary] = useState(false)
   const previewNavigation = disabled && typeof onActiveGroupChange === 'function'
   const requestedStepIndex = previewNavigation
@@ -52,6 +60,7 @@ export default function Wizard({
     setStepData((previous) => {
       const next = [...previous]
       next[currentStepIndex] = formData
+      onChange?.(Object.assign({}, ...next))
       return next
     })
   }
@@ -61,6 +70,7 @@ export default function Wizard({
     const next = [...stepData]
     next[currentStepIndex] = formData
     setStepData(next)
+    onChange?.(Object.assign({}, ...next))
     if (isLastStep) {
       if (showSummary) setShowingSummary(true)
       else onSubmit(Object.assign({}, ...next))

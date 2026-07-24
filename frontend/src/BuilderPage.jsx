@@ -3,10 +3,13 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   createDraft,
   generate,
+  generateProjectScreen,
   listScreens,
   loadDraft,
+  loadProjectScreenDraft,
   loadScreen,
   saveDraft,
+  saveProjectScreenDraft,
   validateScreen,
 } from './api.js'
 import { isWizardManifest } from './manifestLayout.js'
@@ -284,10 +287,11 @@ function AppearanceInspector({
 }
 
 export default function BuilderPage() {
-  const { screenId } = useParams()
+  const { agentId: projectAgentId, screenId } = useParams()
   const location = useLocation()
   const navigate = useNavigate()
   const resumed = location.state?.builderDraft
+  const projectMode = Boolean(projectAgentId)
   const editing = Boolean(screenId)
 
   const initialState = useMemo(
@@ -313,6 +317,9 @@ export default function BuilderPage() {
   const [savedVersion, setSavedVersion] = useState(initialState.savedVersion)
   const [draftAgentId, setDraftAgentId] = useState(initialState.draftAgentId)
   const [draftRevision, setDraftRevision] = useState(initialState.draftRevision)
+  const [projectPurpose, setProjectPurpose] = useState('intake')
+  const [projectSource, setProjectSource] = useState('llm')
+  const [projectGeneration, setProjectGeneration] = useState({})
   const [hasPersistedDraft, setHasPersistedDraft] = useState(
     Boolean(editing || initialState.draftRevision),
   )
@@ -425,8 +432,13 @@ export default function BuilderPage() {
     setNotice(null)
     const openSavedEditor = async () => {
       try {
-        const draft = await loadDraft(screenId)
+        const draft = projectMode
+          ? await loadProjectScreenDraft(projectAgentId, screenId)
+          : await loadDraft(screenId)
         if (cancelled) return
+        if (projectMode && draft.screen_type !== 'form') {
+          throw new Error('This route can edit form screens only.')
+        }
         if (!draft?.draft_manifest?.input_schema) {
           throw new Error('Saved draft is missing its manifest.')
         }
@@ -442,7 +454,10 @@ export default function BuilderPage() {
         setPresentation(restoredPresentation)
         setSavedVersion(draft.published_version ?? null)
         setReviewDraft(restoredReview)
-        setDraftAgentId(draft.agent_id)
+        setDraftAgentId(projectMode ? draft.screen_id : draft.agent_id)
+        setProjectPurpose(draft.purpose ?? 'intake')
+        setProjectSource(draft.source ?? 'llm')
+        setProjectGeneration(draft.generation ?? {})
         setDraftRevision(draft.revision)
         setDraftSaveStatus('Draft saved')
         hasPersistedDraftRef.current = true
@@ -456,6 +471,7 @@ export default function BuilderPage() {
         const friendlyName = restoredPresentation.display_name || draft.name || draft.agent_id
         setNotice(`Editing the working draft for “${friendlyName}”.`)
       } catch (draftError) {
+        if (projectMode) throw draftError
         if (draftError.status !== 404) throw draftError
         const document = await loadScreen(screenId)
         if (cancelled) return
@@ -494,7 +510,7 @@ export default function BuilderPage() {
     return () => {
       cancelled = true
     }
-  }, [resumed, screenId])
+  }, [projectAgentId, projectMode, resumed, screenId])
 
   const handleGenerate = async () => {
     setLoading(true)
@@ -517,7 +533,17 @@ export default function BuilderPage() {
           )
         }
       }
-      const result = await generate(cleanDescription)
+      const generated = projectMode
+        ? await generateProjectScreen(projectAgentId, {
+            screenId,
+            name: presentation.display_name || screenId,
+            screen_type: 'form',
+            purpose: projectPurpose,
+            description: cleanDescription,
+          })
+        : await generate(cleanDescription)
+      const result = projectMode ? generated.manifest : generated
+      if (projectMode) setProjectGeneration(generated.generation ?? {})
       if (!result?.input_schema) throw new Error('Backend response is missing “input_schema”.')
       const nextAgentId = draftAgentId
         ?? screenId
@@ -569,14 +595,24 @@ export default function BuilderPage() {
       const operation = autosavePromiseRef.current
         .catch(() => undefined)
         .then(() => {
-          const persistDraft = hasPersistedDraftRef.current ? saveDraft : createDraft
-          return persistDraft(draftAgentId, {
+          const payload = {
             manifest: reviewDraft.manifest,
             description: sourceDescription,
             name: presentation.display_name || draftAgentId,
             presentation: normalizedPresentation,
             editorState: reviewDraft,
-          })
+          }
+          if (projectMode) {
+            return saveProjectScreenDraft(projectAgentId, screenId, {
+              ...payload,
+              screenType: 'form',
+              purpose: projectPurpose,
+              source: projectSource,
+              generation: projectGeneration,
+            })
+          }
+          const persistDraft = hasPersistedDraftRef.current ? saveDraft : createDraft
+          return persistDraft(draftAgentId, payload)
         })
       autosavePromiseRef.current = operation
       operation
@@ -615,6 +651,12 @@ export default function BuilderPage() {
     reviewDraft,
     sourceDescription,
     validatingReview,
+    projectAgentId,
+    projectMode,
+    projectPurpose,
+    projectSource,
+    projectGeneration,
+    screenId,
   ])
 
   const handleReviewComplete = async () => {
@@ -636,15 +678,26 @@ export default function BuilderPage() {
         name: agentId,
         description: sourceDescription,
       })
-      const persistDraft = hasPersistedDraftRef.current ? saveDraft : createDraft
-      const draft = await persistDraft(agentId, {
+      const payload = {
         manifest: reviewDraft.manifest,
         approvedManifest: manifest,
         description: sourceDescription,
         name: presentation.display_name || agentId,
         presentation: normalizedPresentation,
         editorState: reviewDraft,
-      })
+      }
+      const draft = projectMode
+        ? await saveProjectScreenDraft(projectAgentId, screenId, {
+            ...payload,
+            screenType: 'form',
+            purpose: projectPurpose,
+            source: projectSource,
+            generation: projectGeneration,
+          })
+        : await (hasPersistedDraftRef.current ? saveDraft : createDraft)(
+            agentId,
+            payload,
+          )
       const snapshot = draftSnapshot({
         manifest: reviewDraft.manifest,
         description: sourceDescription,
@@ -658,6 +711,10 @@ export default function BuilderPage() {
       setDraftRevision(draft.revision)
       setSavedVersion(draft.published_version ?? null)
       setDraftSaveStatus('Draft saved')
+      if (projectMode) {
+        navigate(`/studio/agents/${encodeURIComponent(projectAgentId)}/preview`)
+        return
+      }
       const preview = {
         manifest,
         description: sourceDescription,
@@ -776,7 +833,12 @@ export default function BuilderPage() {
           </section>
 
           <div className="project-sidebar-footer">
-            <Link to="/library">← Screen library</Link>
+            <Link to={projectMode
+              ? `/studio/agents/${encodeURIComponent(projectAgentId)}`
+              : '/library'}
+            >
+              ← {projectMode ? 'Agent workspace' : 'Agent library'}
+            </Link>
             <span><i /> Backend validation active</span>
           </div>
         </aside>
@@ -830,7 +892,7 @@ export default function BuilderPage() {
                         onSubmit={() => {}}
                         presentation={presentation}
                         description={sourceDescription || description}
-                        agentName={screenId ?? ''}
+                        agentName={presentation.display_name || screenId || ''}
                         interactive={false}
                         activeGroupId={activeWizardGroupId}
                         onActiveGroupChange={setActiveWizardGroupId}
