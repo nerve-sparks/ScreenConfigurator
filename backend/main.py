@@ -8,15 +8,18 @@ any specific agent name or type.
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from content_manifest import validate_screen_manifest
+from frontend_export import FrontendExportError, build_frontend_archive
 from db import (
     duplicate_screen,
     ensure_indexes,
@@ -920,6 +923,76 @@ def get_agent_release(agent_id: str, version: int) -> dict:
             detail=f"Release {version} was not found for '{agent_id}'.",
         )
     return release
+
+
+@app.get("/agents/{agent_id}/releases/{version}/export")
+def export_agent_release_frontend(agent_id: str, version: int) -> Response:
+    """Download one exact immutable release as a standalone frontend."""
+    agent_id = _validated_agent_id(agent_id)
+    if version < 1:
+        raise HTTPException(status_code=422, detail="version must be at least 1")
+
+    try:
+        release = get_release(agent_id, version)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if release is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Release {version} was not found for '{agent_id}'.",
+        )
+    if release.get("agent_id") != agent_id or release.get("version") != version:
+        logger.error(
+            "Release lookup returned mismatched identity agent_id=%s version=%s",
+            agent_id,
+            version,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Frontend export is unavailable for this release.",
+        )
+
+    started_at = time.monotonic()
+    try:
+        archive, filename = build_frontend_archive(release)
+    except FrontendExportError as exc:
+        logger.exception(
+            "Frontend export failed agent_id=%s version=%s reason=%s",
+            agent_id,
+            version,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Frontend export is unavailable for this release.",
+        ) from exc
+    except Exception as exc:
+        logger.exception(
+            "Unexpected frontend export failure agent_id=%s version=%s",
+            agent_id,
+            version,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Frontend export is unavailable for this release.",
+        ) from exc
+
+    logger.info(
+        "Frontend export prepared agent_id=%s version=%s bytes=%s duration_ms=%s",
+        agent_id,
+        version,
+        len(archive),
+        round((time.monotonic() - started_at) * 1000),
+    )
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/agents/{agent_id}/published")

@@ -443,6 +443,21 @@ export async function loadAgentRelease(agentId, version = null) {
   return result
 }
 
+export async function downloadAgentFrontend(agentId, version) {
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error('A published release version is required for download.')
+  }
+  const response = await fetch(
+    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/releases/${version}/export`,
+  )
+  if (!response.ok) throw await responseError(response)
+  const archive = await response.blob()
+  if (!archive.size) {
+    throw new Error('Backend returned an empty frontend archive.')
+  }
+  return archive
+}
+
 export async function restoreAgentRelease(agentId, version) {
   const response = await fetch(
     `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/releases/${version}/restore`,

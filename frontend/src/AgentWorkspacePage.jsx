@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   createProjectScreenDraft,
+  downloadAgentFrontend,
   duplicateProjectScreen,
   generateProjectScreen,
   generateScreenPlan,
@@ -11,6 +12,7 @@ import {
   saveAgentProject,
   setProjectScreenArchived,
 } from './api.js'
+import { saveFrontendArchive } from './frontendDownload.js'
 import { normalizePresentation } from './presentation.js'
 import { createReviewDraft } from './reviewModel.js'
 import { screenIdFrom } from './screenIdentity.js'
@@ -143,6 +145,7 @@ export default function AgentWorkspacePage() {
   const [releases, setReleases] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [exportError, setExportError] = useState('')
   const [notice, setNotice] = useState('')
   const [tab, setTab] = useState(location.state?.openScreenPlan ? 'plan' : 'screens')
   const [plan, setPlan] = useState([])
@@ -158,6 +161,8 @@ export default function AgentWorkspacePage() {
   const [duplicateName, setDuplicateName] = useState('')
   const [identity, setIdentity] = useState({ name: '', description: '' })
   const [savingProject, setSavingProject] = useState(false)
+  const [exportingVersions, setExportingVersions] = useState([])
+  const exportRequests = useRef(new Set())
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -205,6 +210,29 @@ export default function AgentWorkspacePage() {
   )
   const allApproved = orderedScreens.length > 0
     && orderedScreens.every((screen) => screen.approved)
+
+  const handleDownloadRelease = async (version) => {
+    if (exportRequests.current.has(version)) return
+    exportRequests.current.add(version)
+    setExportingVersions((current) => [...current, version])
+    setExportError('')
+    setNotice('')
+    try {
+      const archive = await downloadAgentFrontend(agentId, version)
+      saveFrontendArchive(archive, agentId, version)
+      setNotice(`Release ${version} frontend was downloaded.`)
+    } catch (requestError) {
+      setExportError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'The frontend download could not be prepared.',
+      )
+    } finally {
+      exportRequests.current.delete(version)
+      setExportingVersions((current) =>
+        current.filter((item) => item !== version))
+    }
+  }
 
   const handleGeneratePlan = async () => {
     setPlanning(true)
@@ -459,6 +487,12 @@ export default function AgentWorkspacePage() {
       </section>
 
       {notice && <div className="alert alert-success" role="status">{notice}</div>}
+      {exportError && (
+        <div className="alert alert-danger workspace-error" role="alert">
+          <strong>Could not download the frontend</strong>
+          <span>{exportError}</span>
+        </div>
+      )}
       {error && <div className="alert alert-danger workspace-error" role="alert">{error}</div>}
 
       <nav className="agent-workspace-tabs" aria-label="Agent workspace sections">
@@ -761,6 +795,16 @@ export default function AgentWorkspacePage() {
                   <span className="library-version">release {release.version}</span>
                   <div><strong>{release.change_summary}</strong><small>{release.published_at} · {(release.screen_ids ?? []).length} screens</small></div>
                   <Link className="btn btn-link" to={`/agents/${encodeURIComponent(agentId)}?version=${release.version}`}>Open</Link>
+                  <button
+                    type="button"
+                    className="btn btn-link"
+                    disabled={exportingVersions.includes(release.version)}
+                    onClick={() => handleDownloadRelease(release.version)}
+                  >
+                    {exportingVersions.includes(release.version)
+                      ? 'Preparing download…'
+                      : 'Download frontend'}
+                  </button>
                   <button type="button" className="btn btn-link" onClick={() => handleRestoreRelease(release.version)}>Restore</button>
                 </li>
               ))}

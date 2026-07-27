@@ -1,0 +1,31 @@
+{
+  "agent_id": "export-preview",
+  "version": 1,
+  "name": "Export Preview",
+  "description": "Validated standalone agent frontend",
+  "presentation": {},
+  "screen_ids": [
+    "welcome"
+  ],
+  "start_screen_id": "welcome",
+  "screens": [
+    {
+      "screen_id": "welcome",
+      "screen_type": "content",
+      "purpose": "information",
+      "name": "Welcome",
+      "description": "Preview template placeholder",
+      "presentation": {},
+      "manifest": {
+        "blocks": [
+          {
+            "id": "welcome-heading",
+            "type": "heading",
+            "level": 2,
+            "text": "Export preview"
+          }
+        ]
+      }
+    }
+  ]
+}

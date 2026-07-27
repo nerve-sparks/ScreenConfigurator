@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createDraft,
+  downloadAgentFrontend,
   duplicateScreen,
   listScreenVersions,
   listScreens,
@@ -45,6 +46,40 @@ describe('validateScreen', () => {
     )
 
     await expect(validateScreen({})).rejects.toThrow(/invalid validation response/i)
+  })
+})
+
+describe('downloadAgentFrontend', () => {
+  it('fetches one exact release as a Blob', async () => {
+    const archive = new Blob(['zip'], { type: 'application/zip' })
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: async () => archive,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      downloadAgentFrontend('inbound-calling-agent', 4),
+    ).resolves.toBe(archive)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /\/agents\/inbound-calling-agent\/releases\/4\/export$/,
+      ),
+    )
+  })
+
+  it('preserves a safe backend export error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        detail: 'Frontend export is unavailable for this release.',
+      }),
+    }))
+
+    await expect(
+      downloadAgentFrontend('inbound-calling-agent', 1),
+    ).rejects.toThrow('Frontend export is unavailable for this release.')
   })
 })
 

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
+  downloadAgentFrontend,
   duplicateAgentProject,
   listAgents,
   setAgentArchived,
 } from './api.js'
+import { saveFrontendArchive } from './frontendDownload.js'
 import { screenIdFrom } from './screenIdentity.js'
 import { SparkIcon, WorkspaceLoading } from './StudioShell.jsx'
 
@@ -20,6 +22,7 @@ export default function AgentLibraryPage() {
   const [agents, setAgents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [actionError, setActionError] = useState('')
   const [notice, setNotice] = useState('')
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('active')
@@ -27,6 +30,8 @@ export default function AgentLibraryPage() {
   const [duplicateName, setDuplicateName] = useState('')
   const [dialogError, setDialogError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [exportingAgentIds, setExportingAgentIds] = useState([])
+  const exportRequests = useRef(new Set())
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -72,6 +77,37 @@ export default function AgentLibraryPage() {
     setDialogError('')
   }
 
+  const downloadFrontend = async (agent) => {
+    if (
+      exportRequests.current.has(agent.agent_id)
+      || !Number.isInteger(agent.latest_release)
+    ) return
+    exportRequests.current.add(agent.agent_id)
+    setExportingAgentIds((current) => [...current, agent.agent_id])
+    setActionError('')
+    setNotice('')
+    try {
+      const archive = await downloadAgentFrontend(
+        agent.agent_id,
+        agent.latest_release,
+      )
+      saveFrontendArchive(archive, agent.agent_id, agent.latest_release)
+      setNotice(
+        `${agent.name} release ${agent.latest_release} frontend was downloaded.`,
+      )
+    } catch (requestError) {
+      setActionError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'The frontend download could not be prepared.',
+      )
+    } finally {
+      exportRequests.current.delete(agent.agent_id)
+      setExportingAgentIds((current) =>
+        current.filter((agentId) => agentId !== agent.agent_id))
+    }
+  }
+
   const confirmDialog = async () => {
     if (!dialog) return
     setBusy(true)
@@ -112,6 +148,12 @@ export default function AgentLibraryPage() {
       </section>
 
       {notice && <div className="alert alert-success" role="status">{notice}</div>}
+      {actionError && (
+        <div className="alert alert-danger" role="alert">
+          <strong>Could not download the frontend</strong>
+          <span>{actionError}</span>
+        </div>
+      )}
       {error && (
         <div className="library-error alert alert-danger" role="alert">
           <div><strong>Could not load the agent library</strong><span>{error}</span></div>
@@ -209,6 +251,36 @@ export default function AgentLibraryPage() {
                     >
                       Preview agent
                     </Link>
+                  )}
+                  {Number.isInteger(agent.latest_release) ? (
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary"
+                      disabled={exportingAgentIds.includes(agent.agent_id)}
+                      onClick={() => downloadFrontend(agent)}
+                    >
+                      {exportingAgentIds.includes(agent.agent_id)
+                        ? 'Preparing download…'
+                        : 'Download frontend'}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary"
+                        disabled
+                        aria-describedby={`${agent.agent_id}-download-help`}
+                      >
+                        Publish to download
+                      </button>
+                      <span
+                        id={`${agent.agent_id}-download-help`}
+                        className="sr-only"
+                      >
+                        Publish a validated immutable release before downloading
+                        this agent frontend.
+                      </span>
+                    </>
                   )}
                   <button
                     type="button"

@@ -30,6 +30,8 @@ and saved independently.
 - One mutable working draft per project screen plus immutable, atomic agent releases.
 - Searchable Agent Library with project duplication, release history,
   restore-to-drafts, and reversible project or screen archiving.
+- Per-release frontend export with editable React/Vite source, a verified
+  lockfile, and a self-contained click-to-open preview.
 - Loading previously saved screens without calling the LLM again.
 - Responsive desktop, tablet, and mobile interface.
 - Route-separated builder, preview, published screen, and saved library.
@@ -98,6 +100,9 @@ ScreenConfigurator/
 │   ├── manifest_migrations.py   # Compatibility for older saved manifests
 │   ├── db.py                    # MongoDB draft and published-version registry
 │   ├── project_db.py            # Agent projects, ordered screens, and releases
+│   ├── frontend_export.py       # Deterministic immutable-release ZIP export
+│   ├── export_templates/        # Deployment-tracked standalone runtime assets
+│   ├── sync_export_runtime.py   # Developer drift check/synchronization command
 │   ├── content_manifest.py      # Safe content-screen validation
 │   ├── MANIFEST_CONTRACT.md
 │   └── test_*.py
@@ -344,6 +349,20 @@ in browser memory and are never sent to draft or publish storage.
 Production hosting must send unknown frontend paths to `index.html` so direct
 links such as `/screens/email-agent` can be handled by React Router.
 
+### Backend deployment assets
+
+`backend/export_templates` is a required backend deployment asset. Container
+images and deployment bundles must copy that directory beside
+`backend/frontend_export.py`; for example, a backend Docker build must include:
+
+```dockerfile
+COPY backend /app/backend
+```
+
+The exporter resolves the templates from `Path(__file__).resolve().parent` and
+never reads `frontend/src` or the process working directory. Missing or
+incomplete templates cause a safe export-unavailable response.
+
 ## Using the application
 
 1. Create an agent project with a stable name and description.
@@ -357,6 +376,15 @@ links such as `/screens/email-agent` can be handled by React Router.
 8. Publish after every active screen is approved. One immutable release snapshots
    project settings, navigation, and all included screen manifests atomically.
 9. Open `/agents/{agentId}` or restore an older release into new mutable drafts.
+10. Use **Download frontend** on a published Agent Library card, or select an
+    exact historical release in the workspace. The ZIP includes editable
+    source and `preview.html`, which opens directly without Node.js.
+
+Exported frontends do not send answers anywhere by default. Completed answers
+remain in browser memory and can be downloaded as
+`{agent_id}-responses.json`. A developer can replace the documented
+`src/submitAgent.js` adapter with an application API call without placing
+credentials in the generated browser package.
 
 Human-authored fields are approved when they are created because their creation
 is already an explicit human decision. At least one field must remain approved
@@ -380,6 +408,7 @@ before the screen can reach preview.
 | `POST` | `/agents/{agent_id}/publish` | Atomically create an immutable agent release. |
 | `GET` | `/agents/{agent_id}/releases` | List immutable release history. |
 | `GET` | `/agents/{agent_id}/releases/{version}` | Load one immutable release. |
+| `GET` | `/agents/{agent_id}/releases/{version}/export` | Download one exact release as an isolated frontend ZIP. |
 | `POST` | `/agents/{agent_id}/releases/{version}/restore` | Copy a release back into mutable drafts. |
 | `GET` | `/agents/{agent_id}/published` | Load the latest or selected published release. |
 | `POST` | `/screens/{agent_id}/draft` | Create the first draft, rejecting mismatched or existing IDs. |
@@ -453,6 +482,30 @@ $env:RUN_VERTEX_AI_SMOKE_TEST="true"
 $env:VERTEX_SMOKE_MODEL="vertex_ai/gemini-3.5-flash"
 python -m pytest -q test_llm.py -k optional_real_vertex_ai_smoke
 ```
+
+### Export runtime maintenance
+
+The tracked standalone renderer must stay aligned with the canonical frontend
+runtime. CI can check drift without changing files:
+
+```bash
+python backend/sync_export_runtime.py --check
+```
+
+After an intentional renderer or stylesheet change, synchronize and rebuild the
+self-contained preview:
+
+```bash
+python backend/sync_export_runtime.py --sync
+cd backend/export_templates/source
+npm ci
+npm run build
+node ../build_preview.mjs
+```
+
+Commit both the synchronized source copies and
+`backend/export_templates/preview.template.html`. Export requests never run
+these commands.
 
 ### Frontend
 

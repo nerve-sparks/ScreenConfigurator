@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.jsx'
 import {
   createDraft,
+  downloadAgentFrontend,
   duplicateAgentProject,
   duplicateScreen,
   generate,
@@ -26,12 +27,14 @@ import {
   setScreenArchived,
   validateScreen,
 } from './api.js'
+import { saveFrontendArchive } from './frontendDownload.js'
 import { savePreviewDraft } from './routeDraft.js'
 
 vi.mock('./api.js', () => ({
   createDraft: vi.fn(),
   createAgentProject: vi.fn(),
   createProjectScreenDraft: vi.fn(),
+  downloadAgentFrontend: vi.fn(),
   duplicateAgentProject: vi.fn(),
   duplicateProjectScreen: vi.fn(),
   duplicateScreen: vi.fn(),
@@ -58,6 +61,10 @@ vi.mock('./api.js', () => ({
   setProjectScreenArchived: vi.fn(),
   setScreenArchived: vi.fn(),
   listScreens: vi.fn(),
+}))
+
+vi.mock('./frontendDownload.js', () => ({
+  saveFrontendArchive: vi.fn(),
 }))
 
 const generatedManifest = {
@@ -180,6 +187,9 @@ beforeEach(() => {
   listScreens.mockResolvedValue([])
   listAgents.mockResolvedValue([])
   listAgentReleases.mockResolvedValue([])
+  downloadAgentFrontend.mockResolvedValue(
+    new Blob(['frontend'], { type: 'application/zip' }),
+  )
   loadAgentProject.mockResolvedValue({
     agent_id: 'research-agent',
     name: 'Research Agent',
@@ -693,6 +703,39 @@ describe('separated screen routes', () => {
       'href',
       '/agents/research-agent',
     )
+    expect(screen.getByRole('button', { name: 'Download frontend' })).toBeEnabled()
+  })
+
+  it('downloads the exact immutable release shown on an agent card', async () => {
+    const user = userEvent.setup()
+    const archive = new Blob(['release-two'], { type: 'application/zip' })
+    downloadAgentFrontend.mockResolvedValueOnce(archive)
+    listAgents.mockResolvedValue([{
+      agent_id: 'research-agent',
+      name: 'Research Agent',
+      screen_count: 2,
+      latest_release: 2,
+      has_unpublished_changes: false,
+      is_archived: false,
+    }])
+    renderApp('/library')
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Download frontend' }),
+    )
+
+    await waitFor(() => {
+      expect(downloadAgentFrontend).toHaveBeenCalledWith('research-agent', 2)
+      expect(saveFrontendArchive).toHaveBeenCalledWith(
+        archive,
+        'research-agent',
+        2,
+      )
+    })
+    expect(screen.getByRole('heading', { name: 'Research Agent' })).toBeInTheDocument()
+    expect(
+      await screen.findByText(/release 2 frontend was downloaded/i),
+    ).toBeInTheDocument()
   })
 
   it('shows draft-only agents without a published route', async () => {
@@ -714,6 +757,7 @@ describe('separated screen routes', () => {
       'href',
       '/studio/agents/draft-agent',
     )
+    expect(screen.getByRole('button', { name: 'Publish to download' })).toBeDisabled()
     expect(screen.queryByRole('link', { name: /Published agent/ })).not.toBeInTheDocument()
   })
 
@@ -792,6 +836,40 @@ describe('separated screen routes', () => {
 
     await waitFor(() => {
       expect(restoreAgentRelease).toHaveBeenCalledWith('research-agent', 1)
+    })
+  })
+
+  it('downloads the selected historical release instead of the latest release', async () => {
+    const user = userEvent.setup()
+    loadAgentProject.mockResolvedValue({
+      agent_id: 'research-agent',
+      name: 'Research Agent',
+      description: 'Research',
+      presentation: {},
+      screen_ids: [],
+      start_screen_id: null,
+      revision: 'project-revision-1',
+      screens: [],
+    })
+    listAgentReleases.mockResolvedValue([
+      { version: 3, change_summary: 'Latest', published_at: '2026-07-21' },
+      { version: 1, change_summary: 'Initial', published_at: '2026-07-19' },
+    ])
+    renderApp('/studio/agents/research-agent')
+
+    await user.click(await screen.findByRole('button', { name: 'Releases (2)' }))
+    const initialRelease = (await screen.findByText('Initial')).closest('li')
+    await user.click(
+      within(initialRelease).getByRole('button', { name: 'Download frontend' }),
+    )
+
+    await waitFor(() => {
+      expect(downloadAgentFrontend).toHaveBeenCalledWith('research-agent', 1)
+      expect(saveFrontendArchive).toHaveBeenCalledWith(
+        expect.any(Blob),
+        'research-agent',
+        1,
+      )
     })
   })
 
