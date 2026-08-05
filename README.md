@@ -86,7 +86,7 @@ published version. They cannot change or bypass the validated input contract.
 | LLM gateway | LiteLLM |
 | Supported configuration | Google Vertex AI or Gemini API key |
 | Storage | MongoDB with mutable drafts and immutable published versions |
-| Testing | Vitest, Testing Library, pytest |
+| Testing | Vitest, Testing Library |
 
 ## Project structure
 
@@ -104,8 +104,7 @@ ScreenConfigurator/
 │   ├── export_templates/        # Deployment-tracked standalone runtime assets
 │   ├── sync_export_runtime.py   # Developer drift check/synchronization command
 │   ├── content_manifest.py      # Safe content-screen validation
-│   ├── MANIFEST_CONTRACT.md
-│   └── test_*.py
+│   └── MANIFEST_CONTRACT.md
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx              # Route map and lazy route boundaries
@@ -464,24 +463,6 @@ MongoDB uses project, screen-draft, and release states:
   not part of either storage document.
 
 ## Testing
-
-### Backend
-
-```bash
-cd backend
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-```
-
-All normal LLM tests mock LiteLLM, so CI makes no paid or flaky provider calls.
-To run the optional real Vertex AI smoke test locally after configuring
-Application Default Credentials:
-
-```powershell
-$env:RUN_VERTEX_AI_SMOKE_TEST="true"
-$env:VERTEX_SMOKE_MODEL="vertex_ai/gemini-3.5-flash"
-python -m pytest -q test_llm.py -k optional_real_vertex_ai_smoke
-```
 
 ### Export runtime maintenance
 
