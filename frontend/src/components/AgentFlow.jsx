@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import ContentExperience from './ContentExperience.jsx'
-import { normalizePresentation } from './presentation.js'
+import { normalizePresentation } from '../lib/presentation.js'
 import ScreenExperience from './ScreenExperience.jsx'
 
 export function orderedJourney(screens, screenIds, startScreenId) {

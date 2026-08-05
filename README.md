@@ -102,7 +102,8 @@ ScreenConfigurator/
 │   ├── project_db.py            # Agent projects, ordered screens, and releases
 │   ├── frontend_export.py       # Deterministic immutable-release ZIP export
 │   ├── export_templates/        # Deployment-tracked standalone runtime assets
-│   ├── sync_export_runtime.py   # Developer drift check/synchronization command
+│   ├── utils/                   # Shared persistence, LLM, validation, export helpers
+│   │   └── sync_export_runtime.py  # Developer drift check/synchronization command
 │   ├── content_manifest.py      # Safe content-screen validation
 │   └── MANIFEST_CONTRACT.md
 ├── frontend/
@@ -470,15 +471,15 @@ The tracked standalone renderer must stay aligned with the canonical frontend
 runtime. CI can check drift without changing files:
 
 ```bash
-python backend/sync_export_runtime.py --check
+cd backend && python -m utils.sync_export_runtime --check
 ```
 
 After an intentional renderer or stylesheet change, synchronize and rebuild the
 self-contained preview:
 
 ```bash
-python backend/sync_export_runtime.py --sync
-cd backend/export_templates/source
+cd backend && python -m utils.sync_export_runtime --sync
+cd export_templates/source
 npm ci
 npm run build
 node ../build_preview.mjs
