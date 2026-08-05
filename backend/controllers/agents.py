@@ -6,10 +6,11 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
+from utils.auth_deps import get_current_user
 from utils.db import slugify
 from utils.frontend_export import FrontendExportError, build_frontend_archive
 from utils.llm import (
@@ -33,6 +34,7 @@ from models.schemas import (
     SaveAgentProjectRequest,
     SaveProjectScreenRequest,
 )
+from utils.scorecard import build_scorecard_brief, normalize_scorecard
 from utils.project_db import (
     create_project,
     duplicate_agent_project,
@@ -54,7 +56,10 @@ from utils.project_db import (
 from services import common
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["agents"])
+router = APIRouter(
+    tags=["agents"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.post("/agents", status_code=201)
@@ -63,6 +68,14 @@ def create_agent_project(request: CreateAgentProjectRequest) -> dict:
     agent_id = slugify(name)
     if not agent_id:
         raise HTTPException(status_code=422, detail="name must contain letters or digits")
+    try:
+        scorecard = (
+            normalize_scorecard(request.scorecard)
+            if request.scorecard is not None
+            else {}
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         if project_exists(agent_id):
             raise HTTPException(
@@ -74,6 +87,7 @@ def create_agent_project(request: CreateAgentProjectRequest) -> dict:
             name,
             request.description.strip(),
             request.presentation.model_dump(),
+            scorecard=scorecard,
         )
     except HTTPException:
         raise
@@ -179,7 +193,11 @@ def generate_agent_screen_plan(
                 detail="An agent description is required to generate a screen plan.",
             )
         existing = list_project_screens(agent_id, include_archived=False)
-        plan = generate_screen_plan(description, existing)
+        plan = generate_screen_plan(
+            description,
+            existing,
+            scorecard=project.get("scorecard") or {},
+        )
     except HTTPException:
         raise
     except (LLMConfigurationError, LLMTimeoutError, LLMOutputError, LLMProviderError) as exc:
@@ -225,13 +243,15 @@ def generate_agent_project_screen(
             f"{item.get('name', item['screen_id'])}: {item.get('description', '')}"
             for item in existing
         )
+        scorecard_brief = build_scorecard_brief(project.get("scorecard") or {})
         brief = (
             f"Agent: {project['name']}\n"
             f"Agent description: {project.get('description', '')}\n"
             f"Screen name: {request.name.strip()}\n"
             f"Screen purpose: {request.purpose}\n"
             f"Screen description: {request.description.strip()}\n"
-            f"Existing screens to avoid duplicating: {existing_context or 'none'}"
+            f"Existing screens to avoid duplicating: {existing_context or 'none'}\n"
+            f"{scorecard_brief}"
         )
         manifest = (
             generate_schema(brief)

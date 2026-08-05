@@ -1,11 +1,17 @@
 import { Suspense, lazy } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom'
+import {
+  GuestOnly,
+  RequireAuth,
+} from './lib/AuthContext.jsx'
 import { NotFoundPage, StudioLayout, WorkspaceLoading } from './components/StudioShell.jsx'
 
 const AgentLibraryPage = lazy(() => import('./pages/AgentLibraryPage.jsx'))
 const AgentWizardPage = lazy(() => import('./pages/AgentWizardPage.jsx'))
 const BuilderPage = lazy(() => import('./pages/BuilderPage.jsx'))
 const ContentBuilderPage = lazy(() => import('./pages/ContentBuilderPage.jsx'))
+const LoginPage = lazy(() => import('./pages/LoginPage.jsx'))
+const LogoutPage = lazy(() => import('./pages/LogoutPage.jsx'))
 const PublishedAgentPage = lazy(() => import('./pages/PublishedAgentPage.jsx'))
 const PublishedScreenPage = lazy(() => import('./pages/PublishedScreenPage.jsx'))
 
@@ -28,10 +34,50 @@ function RedirectToWizard() {
   return <Navigate to={`/studio/agents/${encodeURIComponent(agentId)}`} replace />
 }
 
+function ProtectedStudio() {
+  return (
+    <RequireAuth>
+      <StudioLayout />
+    </RequireAuth>
+  )
+}
+
+function ProtectedOutlet() {
+  return (
+    <RequireAuth>
+      <Outlet />
+    </RequireAuth>
+  )
+}
+
 export default function App() {
   return (
     <Routes>
-      <Route element={<StudioLayout />}>
+      <Route
+        path="/login"
+        element={(
+          <GuestOnly>
+            <RouteBoundary><LoginPage /></RouteBoundary>
+          </GuestOnly>
+        )}
+      />
+      <Route
+        path="/logout"
+        element={<RouteBoundary><LogoutPage /></RouteBoundary>}
+      />
+
+      <Route element={<ProtectedOutlet />}>
+        <Route
+          path="/screens/:screenId"
+          element={<RouteBoundary><PublishedScreenPage /></RouteBoundary>}
+        />
+        <Route
+          path="/agents/:agentId"
+          element={<RouteBoundary><PublishedAgentPage /></RouteBoundary>}
+        />
+      </Route>
+
+      <Route element={<ProtectedStudio />}>
         <Route
           path="/library"
           element={<RouteBoundary><AgentLibraryPage /></RouteBoundary>}
@@ -56,15 +102,15 @@ export default function App() {
         <Route path="/studio/agents/:agentId/preview" element={<RedirectToWizard />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
+
       <Route
-        path="/screens/:screenId"
-        element={<RouteBoundary><PublishedScreenPage /></RouteBoundary>}
+        path="/"
+        element={(
+          <RequireAuth>
+            <Navigate to="/studio/agents/new" replace />
+          </RequireAuth>
+        )}
       />
-      <Route
-        path="/agents/:agentId"
-        element={<RouteBoundary><PublishedAgentPage /></RouteBoundary>}
-      />
-      <Route path="/" element={<Navigate to="/studio/agents/new" replace />} />
     </Routes>
   )
 }

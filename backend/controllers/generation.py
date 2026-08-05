@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from utils.auth_deps import get_current_user
 from utils.llm import (
     LLMConfigurationError,
     LLMOutputError,
@@ -18,7 +19,10 @@ from models.schemas import GenerateRequest, ValidateManifestRequest
 from services import common
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["generation"])
+router = APIRouter(
+    tags=["generation"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.post("/generate")

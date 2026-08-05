@@ -232,6 +232,7 @@ def create_project(
     name: str,
     description: str,
     presentation: Optional[dict] = None,
+    scorecard: Optional[dict] = None,
 ) -> dict:
     now = db._utc_now()
     project = {
@@ -239,6 +240,7 @@ def create_project(
         "name": name,
         "description": description,
         "presentation": presentation or {},
+        "scorecard": scorecard or {},
         "screen_ids": [],
         "start_screen_id": None,
         "revision": uuid4().hex,
@@ -514,6 +516,7 @@ def duplicate_agent_project(
         name,
         source_project.get("description", ""),
         presentation,
+        scorecard=deepcopy(source_project.get("scorecard") or {}),
     )
     id_mapping: dict[str, str] = {}
     try:

@@ -58,7 +58,7 @@ _MAX_RETRY_OUTPUT_CHARS = 12_000
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
 PROMPT_VERSION = "3"
-SCREEN_PLAN_PROMPT_VERSION = "1"
+SCREEN_PLAN_PROMPT_VERSION = "2"
 CONTENT_PROMPT_VERSION = "1"
 
 _router: Router | None = None
@@ -622,6 +622,13 @@ Every screen must contain:
   "confirmation" for content screens.
 - "description": a concise generation brief for that one screen.
 
+When the request includes a scorecard_brief / scorecard_input_fields, map the
+published journey onto that agent contract: collect the listed input fields
+across one or more form screens, keep field names aligned with the scorecard
+where practical, and add only lightweight content screens (welcome /
+confirmation) when helpful. Do not invent connection credentials, health-check
+UIs, orchestrator controls, or result dashboards from output_schema.
+
 Use the smallest useful collection, normally two to six screens and never more
 than twenty. Put screens in the order the user should experience them. Do not
 invent IDs, routes, permissions, credentials, tools, dashboards, chat, result
@@ -743,7 +750,11 @@ def _generate_contract(
     )
 
 
-def generate_screen_plan(description: str, existing_screens: list[dict]) -> dict:
+def generate_screen_plan(
+    description: str,
+    existing_screens: list[dict],
+    scorecard: dict | None = None,
+) -> dict:
     """Generate a validated, identifier-free screen plan."""
     context = {
         "agent_description": description,
@@ -757,6 +768,11 @@ def generate_screen_plan(description: str, existing_screens: list[dict]) -> dict
             for screen in existing_screens
         ],
     }
+    if scorecard:
+        from utils.scorecard import build_scorecard_brief, scorecard_input_fields
+
+        context["scorecard_brief"] = build_scorecard_brief(scorecard)
+        context["scorecard_input_fields"] = scorecard_input_fields(scorecard)
     return _generate_contract(
         description=json.dumps(context, ensure_ascii=True),
         system_prompt=SCREEN_PLAN_PROMPT,

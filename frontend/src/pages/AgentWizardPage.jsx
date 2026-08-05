@@ -21,6 +21,11 @@ import {
   normalizeReviewDraft,
 } from '../lib/reviewModel.js'
 import { screenIdFrom } from '../lib/screenIdentity.js'
+import {
+  descriptionFromScorecard,
+  parseScorecardText,
+  scorecardSummary,
+} from '../lib/scorecard.js'
 import { WorkspaceLoading } from '../components/StudioShell.jsx'
 
 const STEPS = [
@@ -115,6 +120,8 @@ export default function AgentWizardPage() {
   const [plan, setPlan] = useState([])
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [scorecard, setScorecard] = useState(null)
+  const [scorecardText, setScorecardText] = useState('')
   const [changeSummary, setChangeSummary] = useState('Initial agent release')
   const [loading, setLoading] = useState(Boolean(routeAgentId))
   const [busy, setBusy] = useState(false)
@@ -158,6 +165,14 @@ export default function AgentWizardPage() {
     })))
     setDescription(loaded.description || '')
     setName(loaded.name || '')
+    setScorecard(loaded.scorecard && Object.keys(loaded.scorecard).length
+      ? loaded.scorecard
+      : null)
+    setScorecardText(
+      loaded.scorecard && Object.keys(loaded.scorecard).length
+        ? JSON.stringify(loaded.scorecard, null, 2)
+        : '',
+    )
     return loaded
   }, [])
 
@@ -185,6 +200,48 @@ export default function AgentWizardPage() {
     setSearchParams({ step: next }, { replace: true })
   }
 
+  const scorecardInfo = useMemo(
+    () => scorecardSummary(scorecard || project?.scorecard),
+    [scorecard, project],
+  )
+
+  const applyScorecardText = (text, { fillEmpty = true } = {}) => {
+    const trimmed = text.trim()
+    if (!trimmed) {
+      setScorecard(null)
+      setScorecardText('')
+      return
+    }
+    const parsed = parseScorecardText(trimmed)
+    setScorecard(parsed)
+    setScorecardText(JSON.stringify(parsed, null, 2))
+    if (fillEmpty && !name.trim() && parsed.name) {
+      setName(String(parsed.name).slice(0, 80))
+    }
+    if (fillEmpty && !description.trim()) {
+      setDescription(descriptionFromScorecard(parsed).slice(0, 5000))
+    }
+  }
+
+  const handleScorecardBlur = () => {
+    if (!scorecardText.trim()) {
+      setScorecard(null)
+      return
+    }
+    try {
+      setError('')
+      applyScorecardText(scorecardText)
+    } catch (err) {
+      setScorecard(null)
+      setError(err.message)
+    }
+  }
+
+  const clearScorecard = () => {
+    setScorecard(null)
+    setScorecardText('')
+  }
+
   const handleCreate = async (event) => {
     event.preventDefault()
     const id = screenIdFrom(name)
@@ -192,6 +249,11 @@ export default function AgentWizardPage() {
     setBusy(true)
     setError('')
     try {
+      let nextScorecard = scorecard
+      if (scorecardText.trim()) {
+        nextScorecard = parseScorecardText(scorecardText)
+        setScorecard(nextScorecard)
+      }
       const created = await createAgentProject({
         name: name.trim(),
         description: description.trim(),
@@ -200,6 +262,7 @@ export default function AgentWizardPage() {
           display_name: name.trim(),
           welcome_description: description.trim().slice(0, 240),
         }),
+        scorecard: nextScorecard || undefined,
       })
       navigate(`/studio/agents/${encodeURIComponent(created.agent_id)}?step=plan`)
     } catch (err) {
@@ -386,7 +449,8 @@ export default function AgentWizardPage() {
               <p className="simple-kicker">New agent</p>
               <h1>Describe the agent</h1>
               <p>
-                Who it helps, what they need to accomplish, and what each screen should cover.
+                Add a short brief and paste the agent scorecard JSON so screens
+                map to that agent’s input contract.
               </p>
             </div>
 
@@ -400,11 +464,66 @@ export default function AgentWizardPage() {
                   value={name}
                   maxLength={80}
                   onChange={(event) => setName(event.target.value)}
-                  placeholder="e.g. Inbound Calling Agent"
+                  placeholder="e.g. AI Business proposal agent"
                   required
                 />
                 <small>ID: {screenIdFrom(name) || '—'}</small>
               </label>
+
+              <div className="scorecard-attach">
+                <div className="scorecard-attach-head">
+                  <div>
+                    <strong>Agent scorecard</strong>
+                    <p>Paste the agent scorecard JSON (input_schema, connection, agent_id).</p>
+                  </div>
+                  {scorecardText.trim() && (
+                    <button type="button" className="btn btn-link" onClick={clearScorecard}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <label className="scorecard-paste">
+                  <span className="sr-only">Scorecard JSON</span>
+                  <textarea
+                    className="form-control"
+                    rows={6}
+                    value={scorecardText}
+                    onChange={(event) => setScorecardText(event.target.value)}
+                    onBlur={handleScorecardBlur}
+                    placeholder='{ "name": "AI Business proposal agent", "agent_id": "...", "input_schema": { ... } }'
+                    spellCheck={false}
+                  />
+                </label>
+                {scorecardInfo ? (
+                  <div className="scorecard-summary">
+                    <div className="scorecard-summary-meta">
+                      <span>Scorecard ready</span>
+                      {scorecardInfo.runtimeId && <code>{scorecardInfo.runtimeId}</code>}
+                      {scorecardInfo.version && <em>v{scorecardInfo.version}</em>}
+                    </div>
+                    <ul>
+                      {scorecardInfo.fieldCount > 0 ? (
+                        scorecardInfo.fields.map((field) => (
+                          <li key={field.name}>
+                            <strong>{field.name}</strong>
+                            <span>
+                              {field.type}
+                              {field.required ? ' · required' : ''}
+                            </span>
+                          </li>
+                        ))
+                      ) : (
+                        <li>No input_schema fields found — plan will use your description.</li>
+                      )}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="scorecard-hint">
+                    Optional. Without a scorecard, screens are planned from the description only.
+                  </p>
+                )}
+              </div>
+
               <label className="create-description">
                 Description
                 <textarea
@@ -470,6 +589,21 @@ export default function AgentWizardPage() {
             <strong>Agent brief</strong>
             <p>{description || project?.description}</p>
           </div>
+          {(scorecardInfo) && (
+            <div className="simple-brief scorecard-plan-brief">
+              <strong>Scorecard mapping</strong>
+              <p>
+                Screens will map onto runtime agent{' '}
+                <code>
+                  {scorecardInfo.runtimeId || scorecardInfo.name || 'attached'}
+                </code>
+                {scorecardInfo.fieldCount
+                  ? ` · ${scorecardInfo.fieldCount} input field(s)`
+                  : ''}
+                .
+              </p>
+            </div>
+          )}
           <div className="simple-actions">
             <button
               type="button"

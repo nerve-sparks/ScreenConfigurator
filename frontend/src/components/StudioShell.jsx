@@ -3,6 +3,7 @@ import {
   SparkIcon,
   WorkspaceLoading,
 } from './RuntimePrimitives.jsx'
+import { useAuth } from '../lib/AuthContext.jsx'
 
 export {
   AgentGlyph,
@@ -11,6 +12,9 @@ export {
 } from './RuntimePrimitives.jsx'
 
 export function StudioLayout() {
+  const { user } = useAuth()
+  const userLabel = user?.email || user?.display_name || null
+
   return (
     <div className="app-shell is-simple">
       <header className="app-header simple-header">
@@ -25,20 +29,33 @@ export function StudioLayout() {
             </span>
           </Link>
 
-          <nav className="app-navigation" aria-label="Studio navigation">
-            <NavLink
-              className={({ isActive }) => (isActive ? 'is-active' : '')}
-              to="/studio/agents/new"
-            >
-              New agent
-            </NavLink>
-            <NavLink
-              className={({ isActive }) => (isActive ? 'is-active' : '')}
-              to="/library"
-            >
-              Library
-            </NavLink>
-          </nav>
+          <div className="app-header-actions">
+            <nav className="app-navigation" aria-label="Studio navigation">
+              <NavLink
+                className={({ isActive }) => (isActive ? 'is-active' : '')}
+                to="/studio/agents/new"
+              >
+                New agent
+              </NavLink>
+              <NavLink
+                className={({ isActive }) => (isActive ? 'is-active' : '')}
+                to="/library"
+              >
+                Library
+              </NavLink>
+            </nav>
+
+            <div className="app-header-session">
+              {userLabel ? (
+                <span className="session-user" title={userLabel}>
+                  {userLabel}
+                </span>
+              ) : null}
+              <Link className="btn btn-outline-secondary btn-sm" to="/logout">
+                Sign out
+              </Link>
+            </div>
+          </div>
         </div>
       </header>
 

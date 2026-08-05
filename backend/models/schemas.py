@@ -67,6 +67,7 @@ class CreateAgentProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=5000)
     presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
+    scorecard: Optional[dict] = None
 
 
 class SaveAgentProjectRequest(BaseModel):

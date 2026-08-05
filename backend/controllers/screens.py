@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
+from utils.auth_deps import get_current_user
 from utils.db import (
     duplicate_screen,
     get_draft,
@@ -30,7 +31,10 @@ from models.schemas import (
 )
 from services import common
 
-router = APIRouter(tags=["screens"])
+router = APIRouter(
+    tags=["screens"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.post("/screens")

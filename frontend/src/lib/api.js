@@ -1,4 +1,14 @@
 // Fetch helpers for the backend API.
+// Every request sends Authorization: Bearer <access_token> when available.
+// On 401, one refresh attempt is made before clearing the session.
+
+import {
+  clearTokens,
+  getAccessToken,
+  getRefreshToken,
+  redirectToLogin,
+  refreshAccessToken,
+} from './auth.js'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
@@ -25,10 +35,68 @@ async function responseError(response) {
   return error
 }
 
+function buildHeaders(initHeaders, { json = false, token } = {}) {
+  const headers = new Headers(initHeaders ?? undefined)
+  if (json && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  } else {
+    headers.delete('Authorization')
+  }
+  return headers
+}
+
+async function handleUnauthorized() {
+  clearTokens()
+  redirectToLogin(true)
+}
+
+export async function apiFetch(path, init = {}, { retry = true } = {}) {
+  const url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`
+  const method = (init.method ?? 'GET').toUpperCase()
+  const hasJsonBody = init.body != null && !(init.body instanceof FormData)
+  const token = getAccessToken()
+
+  const response = await fetch(url, {
+    ...init,
+    headers: buildHeaders(init.headers, {
+      json: hasJsonBody && method !== 'GET' && method !== 'HEAD',
+      token,
+    }),
+  })
+
+  if (response.status !== 401) {
+    return response
+  }
+
+  // Attempt a single refresh when we have a refresh token.
+  if (retry && getRefreshToken()) {
+    try {
+      const nextToken = await refreshAccessToken()
+      const retryResponse = await fetch(url, {
+        ...init,
+        headers: buildHeaders(init.headers, {
+          json: hasJsonBody && method !== 'GET' && method !== 'HEAD',
+          token: nextToken,
+        }),
+      })
+      if (retryResponse.status !== 401) {
+        return retryResponse
+      }
+    } catch {
+      // Refresh failed; fall through to session clear.
+    }
+  }
+
+  await handleUnauthorized()
+  throw await responseError(response)
+}
+
 export async function generate(description) {
-  const response = await fetch(`${API_BASE_URL}/generate`, {
+  const response = await apiFetch('/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ description }),
   })
   if (!response.ok) {
@@ -39,9 +107,8 @@ export async function generate(description) {
 
 // Validate a human-reviewed manifest before previewing or saving it.
 export async function validateScreen(manifest) {
-  const response = await fetch(`${API_BASE_URL}/validate`, {
+  const response = await apiFetch('/validate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ manifest }),
   })
   if (!response.ok) {
@@ -56,9 +123,8 @@ export async function validateScreen(manifest) {
 
 // Save a validated screen; returns {agent_id, version}.
 export async function saveScreen({ manifest, description, name, presentation }) {
-  const response = await fetch(`${API_BASE_URL}/screens`, {
+  const response = await apiFetch('/screens', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ manifest, description, name, presentation }),
   })
   if (!response.ok) {
@@ -70,8 +136,8 @@ export async function saveScreen({ manifest, description, name, presentation }) 
 // Load a saved screen document by agent_id (latest version).
 export async function loadScreen(agentId, version = null) {
   const query = Number.isInteger(version) ? `?version=${version}` : ''
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}${query}`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}${query}`,
   )
   if (!response.ok) {
     throw await responseError(response)
@@ -88,11 +154,10 @@ async function writeDraft(agentId, method, {
   presentation,
   editorState,
 }) {
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/draft`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}/draft`,
     {
       method,
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         manifest,
         ...(approvedManifest ? { approved_manifest: approvedManifest } : {}),
@@ -123,8 +188,8 @@ export async function saveDraft(agentId, payload) {
 }
 
 export async function loadDraft(agentId) {
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/draft`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}/draft`,
   )
   if (!response.ok) throw await responseError(response)
   const result = await response.json()
@@ -136,11 +201,10 @@ export async function loadDraft(agentId) {
 
 // Publish the exact validated draft revision opened in preview.
 export async function publishDraft(agentId, { draftRevision, changeSummary }) {
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/publish`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}/publish`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         draft_revision: draftRevision,
         change_summary: changeSummary,
@@ -157,7 +221,7 @@ export async function publishDraft(agentId, { draftRevision, changeSummary }) {
 
 // List saved screen IDs with their latest immutable version.
 export async function listScreens() {
-  const response = await fetch(`${API_BASE_URL}/screens`)
+  const response = await apiFetch('/screens')
   if (!response.ok) {
     throw await responseError(response)
   }
@@ -170,8 +234,8 @@ export async function listScreens() {
 
 // Load lightweight immutable-version summaries for the library history panel.
 export async function listScreenVersions(agentId) {
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/versions`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}/versions`,
   )
   if (!response.ok) throw await responseError(response)
   const result = await response.json()
@@ -183,11 +247,10 @@ export async function listScreenVersions(agentId) {
 
 // Duplicate the latest working state into a new, unpublished draft.
 export async function duplicateScreen(agentId, name) {
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/duplicate`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}/duplicate`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     },
   )
@@ -201,8 +264,8 @@ export async function duplicateScreen(agentId, name) {
 
 // Copy an immutable version over the mutable working draft.
 export async function restoreScreenVersion(agentId, version) {
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/versions/${version}/restore`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}/versions/${version}/restore`,
     { method: 'POST' },
   )
   if (!response.ok) throw await responseError(response)
@@ -215,11 +278,10 @@ export async function restoreScreenVersion(agentId, version) {
 
 // Archive is a reversible metadata change; no draft or version is deleted.
 export async function setScreenArchived(agentId, archived) {
-  const response = await fetch(
-    `${API_BASE_URL}/screens/${encodeURIComponent(agentId)}/archive`,
+  const response = await apiFetch(
+    `/screens/${encodeURIComponent(agentId)}/archive`,
     {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ archived }),
     },
   )
@@ -231,18 +293,22 @@ export async function setScreenArchived(agentId, archived) {
   return result
 }
 
-export async function createAgentProject({ name, description, presentation }) {
-  const response = await fetch(`${API_BASE_URL}/agents`, {
+export async function createAgentProject({ name, description, presentation, scorecard }) {
+  const response = await apiFetch('/agents', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, presentation }),
+    body: JSON.stringify({
+      name,
+      description,
+      presentation,
+      ...(scorecard ? { scorecard } : {}),
+    }),
   })
   if (!response.ok) throw await responseError(response)
   return response.json()
 }
 
 export async function listAgents() {
-  const response = await fetch(`${API_BASE_URL}/agents`)
+  const response = await apiFetch('/agents')
   if (!response.ok) throw await responseError(response)
   const result = await response.json()
   if (!Array.isArray(result?.agents)) {
@@ -252,8 +318,8 @@ export async function listAgents() {
 }
 
 export async function loadAgentProject(agentId) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}`,
   )
   if (!response.ok) throw await responseError(response)
   const result = await response.json()
@@ -264,11 +330,10 @@ export async function loadAgentProject(agentId) {
 }
 
 export async function saveAgentProject(agentId, payload) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/draft`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/draft`,
     {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     },
   )
@@ -277,11 +342,10 @@ export async function saveAgentProject(agentId, payload) {
 }
 
 export async function generateScreenPlan(agentId, description = '') {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screen-plan/generate`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/screen-plan/generate`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description }),
     },
   )
@@ -294,11 +358,10 @@ export async function generateScreenPlan(agentId, description = '') {
 }
 
 export async function generateProjectScreen(agentId, payload) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/generate`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/screens/generate`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...payload,
         ...(payload.screenId ? { screen_id: payload.screenId } : {}),
@@ -319,11 +382,10 @@ async function writeProjectScreenDraft(
   method,
   payload,
 ) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/draft`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/draft`,
     {
       method,
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         screen_type: payload.screenType,
         purpose: payload.purpose,
@@ -357,8 +419,8 @@ export function saveProjectScreenDraft(agentId, screenId, payload) {
 }
 
 export async function loadProjectScreenDraft(agentId, screenId) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/draft`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/draft`,
   )
   if (!response.ok) throw await responseError(response)
   const result = await response.json()
@@ -369,11 +431,10 @@ export async function loadProjectScreenDraft(agentId, screenId) {
 }
 
 export async function duplicateProjectScreen(agentId, screenId, name) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/duplicate`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/duplicate`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     },
   )
@@ -386,11 +447,10 @@ export async function setProjectScreenArchived(
   screenId,
   archived,
 ) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/archive`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/screens/${encodeURIComponent(screenId)}/archive`,
     {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ archived }),
     },
   )
@@ -402,11 +462,10 @@ export async function publishAgentProject(
   agentId,
   { projectRevision, screenRevisions, changeSummary },
 ) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/publish`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/publish`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_revision: projectRevision,
         screen_revisions: screenRevisions,
@@ -419,8 +478,8 @@ export async function publishAgentProject(
 }
 
 export async function listAgentReleases(agentId) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/releases`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/releases`,
   )
   if (!response.ok) throw await responseError(response)
   const result = await response.json()
@@ -432,8 +491,8 @@ export async function listAgentReleases(agentId) {
 
 export async function loadAgentRelease(agentId, version = null) {
   const query = Number.isInteger(version) ? `?version=${version}` : ''
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/published${query}`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/published${query}`,
   )
   if (!response.ok) throw await responseError(response)
   const result = await response.json()
@@ -447,8 +506,8 @@ export async function downloadAgentFrontend(agentId, version) {
   if (!Number.isInteger(version) || version < 1) {
     throw new Error('A published release version is required for download.')
   }
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/releases/${version}/export`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/releases/${version}/export`,
   )
   if (!response.ok) throw await responseError(response)
   const archive = await response.blob()
@@ -459,8 +518,8 @@ export async function downloadAgentFrontend(agentId, version) {
 }
 
 export async function restoreAgentRelease(agentId, version) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/releases/${version}/restore`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/releases/${version}/restore`,
     { method: 'POST' },
   )
   if (!response.ok) throw await responseError(response)
@@ -468,11 +527,10 @@ export async function restoreAgentRelease(agentId, version) {
 }
 
 export async function setAgentArchived(agentId, archived) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/archive`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/archive`,
     {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ archived }),
     },
   )
@@ -481,11 +539,10 @@ export async function setAgentArchived(agentId, archived) {
 }
 
 export async function duplicateAgentProject(agentId, name) {
-  const response = await fetch(
-    `${API_BASE_URL}/agents/${encodeURIComponent(agentId)}/duplicate`,
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/duplicate`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     },
   )
