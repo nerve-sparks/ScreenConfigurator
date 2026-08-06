@@ -10,7 +10,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -19,60 +18,43 @@ REPOSITORY_ROOT = BACKEND_ROOT.parent
 FRONTEND_SOURCE = REPOSITORY_ROOT / "frontend" / "src"
 EXPORT_SOURCE = BACKEND_ROOT / "export_templates" / "source" / "src"
 
-# Canonical path under frontend/src -> flat export basename
+# Canonical path under frontend/src -> matching path under export src/
 RUNTIME_FILES = (
-    ("components/AgentFlow.jsx", "AgentFlow.jsx"),
-    ("components/ContentExperience.jsx", "ContentExperience.jsx"),
-    ("components/FormRenderer.jsx", "FormRenderer.jsx"),
-    ("components/LayoutRenderer.jsx", "LayoutRenderer.jsx"),
-    ("components/RuntimePrimitives.jsx", "RuntimePrimitives.jsx"),
-    ("components/ScreenExperience.jsx", "ScreenExperience.jsx"),
-    ("components/Wizard.jsx", "Wizard.jsx"),
-    ("lib/layoutBlocks.js", "layoutBlocks.js"),
-    ("lib/manifestLayout.js", "manifestLayout.js"),
-    ("lib/presentation.js", "presentation.js"),
+    ("components/AgentFlow.jsx", "components/AgentFlow.jsx"),
+    ("components/ContentExperience.jsx", "components/ContentExperience.jsx"),
+    ("components/FormRenderer.jsx", "components/FormRenderer.jsx"),
+    ("components/LayoutRenderer.jsx", "components/LayoutRenderer.jsx"),
+    ("components/RuntimePrimitives.jsx", "components/RuntimePrimitives.jsx"),
+    ("components/ScreenExperience.jsx", "components/ScreenExperience.jsx"),
+    ("components/Wizard.jsx", "components/Wizard.jsx"),
+    ("lib/layoutBlocks.js", "lib/layoutBlocks.js"),
+    ("lib/manifestLayout.js", "lib/manifestLayout.js"),
+    ("lib/presentation.js", "lib/presentation.js"),
     ("styles.css", "styles.css"),
 )
-
-_IMPORT_REWRITE = (
-    (re.compile(r"""((?:from|import)\s*\(?\s*['"])\.\./(?:lib|components)/([^'"]+)(['"])"""), r"\1./\2\3"),
-)
-
-
-def flatten_runtime_source(text: str) -> str:
-    """Map studio folder imports onto the flat export_templates/src layout."""
-    for pattern, replacement in _IMPORT_REWRITE:
-        text = pattern.sub(replacement, text)
-    return text
-
-
-def canonical_bytes(source_rel: str) -> bytes:
-    raw = (FRONTEND_SOURCE / source_rel).read_text(encoding="utf-8")
-    if source_rel.endswith((".js", ".jsx")):
-        raw = flatten_runtime_source(raw)
-    return raw.encode("utf-8")
 
 
 def drifted_files() -> list[str]:
     drifted: list[str] = []
-    for source_rel, export_name in RUNTIME_FILES:
+    for source_rel, export_rel in RUNTIME_FILES:
         canonical = FRONTEND_SOURCE / source_rel
-        exported = EXPORT_SOURCE / export_name
+        exported = EXPORT_SOURCE / export_rel
         if not canonical.is_file() or not exported.is_file():
-            drifted.append(export_name)
+            drifted.append(export_rel)
             continue
-        if canonical_bytes(source_rel) != exported.read_bytes():
-            drifted.append(export_name)
+        if canonical.read_bytes() != exported.read_bytes():
+            drifted.append(export_rel)
     return drifted
 
 
 def synchronize() -> None:
-    EXPORT_SOURCE.mkdir(parents=True, exist_ok=True)
-    for source_rel, export_name in RUNTIME_FILES:
+    for source_rel, export_rel in RUNTIME_FILES:
         canonical = FRONTEND_SOURCE / source_rel
         if not canonical.is_file():
             raise FileNotFoundError(f"Canonical runtime file is missing: {canonical}")
-        (EXPORT_SOURCE / export_name).write_bytes(canonical_bytes(source_rel))
+        destination = EXPORT_SOURCE / export_rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(canonical.read_bytes())
 
 
 def main() -> int:

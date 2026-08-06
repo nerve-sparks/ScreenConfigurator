@@ -1,4 +1,4 @@
-import bundledRelease from './agent-release.json'
+import bundledRelease from '../data/agent-release.json'
 
 const EMBEDDED_RELEASE_ID = 'agent-release-data'
 

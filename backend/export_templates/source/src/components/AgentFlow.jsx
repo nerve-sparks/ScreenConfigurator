@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import ContentExperience from './ContentExperience.jsx'
-import { normalizePresentation } from './presentation.js'
+import { normalizePresentation } from '../lib/presentation.js'
 import ScreenExperience from './ScreenExperience.jsx'
 
 export function orderedJourney(screens, screenIds, startScreenId) {
@@ -69,27 +69,31 @@ export default function AgentFlow({
 
   return (
     <section
-      className={`agent-flow ${isPublished ? 'is-published' : ''}`}
+      className={isPublished ? 'agent-flow is-published' : 'agent-flow'}
       aria-label={`${agentName} screens`}
     >
       <ol
-        className={`agent-flow-rail ${isPublished ? 'is-compact' : ''}`}
+        className={isPublished ? 'agent-flow-rail is-compact' : 'agent-flow-rail'}
         aria-label="Agent screen progress"
       >
         {journey.map((screen, index) => {
           const approved = Boolean(screen.approved_manifest)
+          const isActive = index === screenIndex
+          const isComplete = index < screenIndex
           return (
             <li
               key={screen.screen_id}
-              className={`${index === screenIndex ? 'is-active' : ''} ${
-                index < screenIndex ? 'is-complete' : ''
+              className={`${isActive ? 'is-active' : ''} ${
+                isComplete ? 'is-complete' : ''
               } ${showApprovalStatus && approved ? 'is-approved' : ''} ${
                 showApprovalStatus && !approved ? 'needs-approval' : ''
               }`}
-              aria-current={index === screenIndex ? 'step' : undefined}
+              aria-current={isActive ? 'step' : undefined}
             >
-              <span>{index < screenIndex ? '✓' : index + 1}</span>
-              {!isPublished && (
+              <span>{isComplete ? '✓' : index + 1}</span>
+              {isPublished ? (
+                <strong>{screen.name}</strong>
+              ) : (
                 <div>
                   <strong>{screen.name}</strong>
                   <small>
@@ -100,7 +104,6 @@ export default function AgentFlow({
                   </small>
                 </div>
               )}
-              {isPublished && <strong>{screen.name}</strong>}
             </li>
           )
         })}
@@ -113,12 +116,6 @@ export default function AgentFlow({
           </span>
           <span>{current.screen_type === 'form' ? 'Validated form' : 'Information screen'}</span>
         </div>
-      )}
-
-      {isPublished && (
-        <p className="agent-flow-step-label">
-          Step {screenIndex + 1} of {journey.length}
-        </p>
       )}
 
       <div className="agent-flow-screen">

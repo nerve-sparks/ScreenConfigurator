@@ -1,5 +1,5 @@
 import { ContentBlocks } from './LayoutRenderer.jsx'
-import { normalizePresentation, presentationStyle } from './presentation.js'
+import { normalizePresentation, presentationStyle } from '../lib/presentation.js'
 import { AgentGlyph } from './RuntimePrimitives.jsx'
 
 export default function ContentExperience({

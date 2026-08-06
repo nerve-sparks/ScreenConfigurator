@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import FormRenderer from './FormRenderer.jsx'
-import { schemaForGroup, toUiSchema } from './manifestLayout.js'
+import { schemaForGroup, toUiSchema } from '../lib/manifestLayout.js'
 
 /**
  * Multi-screen wizard (Step 6): one step per ui_hints.group.

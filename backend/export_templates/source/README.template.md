@@ -1,53 +1,66 @@
 # __AGENT_NAME__ frontend
 
-This is the standalone frontend for `__AGENT_ID__`, published release
+Standalone React frontend for `__AGENT_ID__`, published release
 `__RELEASE_VERSION__`.
+
+## Layout
+
+```text
+src/
+  App.jsx
+  main.jsx
+  styles.css
+  data/
+    agent-release.json   # screens + scorecard.connection.url
+  lib/
+    api.js               # posts answers to the agent backend
+    releaseLoader.js
+    presentation.js
+    layoutBlocks.js
+    manifestLayout.js
+  components/            # screens, forms, wizard, flow
+  pages/
+    AgentPage.jsx        # published agent experience
+```
 
 ## Open immediately
 
 Open `preview.html` in a modern browser. It is self-contained and does not
-require Node.js, npm, a local server, or a backend connection.
+require Node.js or a local server.
 
-## Edit the React source
+## Run the React app
 
-Requirements:
-
-- Node.js 20.19+ or 22.12+
+Requirements: Node.js 20.19+ or 22.12+
 
 ```bash
 npm ci
+cp .env.example .env   # set VITE_AGENT_API_KEY if the agent needs auth
 npm run dev
 ```
 
-Create a production build with:
+Production build:
 
 ```bash
 npm run build
 ```
 
-The generated files are written to `dist/`.
+## Agent backend connection
 
-## Agent definition
+`src/data/agent-release.json` includes the public scorecard snapshot. When
+`scorecard.connection.url` is set, finishing the journey calls that URL through
+`src/lib/api.js` (JSON by default; multipart for agent-builder `/pipeline`
+URLs).
 
-`src/agent-release.json` contains only the public, validated snapshot for this
-agent release. React components render every form, content screen, and wizard
-step from that definition.
+Secrets are never shipped in the zip. If the agent expects
+`Authorization: Bearer <JWT>`, put it in `.env`:
+
+```bash
+VITE_AGENT_API_KEY=Bearer your-access-token
+```
+
+Then restart `npm run dev`.
 
 ## Collected answers
 
-Answers stay in browser memory. At completion, users can download a local JSON
-file containing:
-
-```json
-{
-  "agent_id": "__AGENT_ID__",
-  "release_version": __RELEASE_VERSION__,
-  "values_by_screen": {}
-}
-```
-
-Decorative layout content is never included in submitted values.
-
-To connect the frontend to your own API, replace the implementation in
-`src/submitAgent.js`. Do not place credentials in browser source or environment
-variables prefixed with `VITE_`.
+Without a connection URL, answers stay in the browser and can be downloaded as
+JSON. With a URL, the agent response is shown on the completion screen.

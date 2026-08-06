@@ -1,7 +1,7 @@
 import { Suspense, lazy } from 'react'
-import { isWizardManifest, toUiSchema } from './manifestLayout.js'
-import { normalizeLayoutBlocks } from './layoutBlocks.js'
-import { normalizePresentation, presentationStyle } from './presentation.js'
+import { isWizardManifest, toUiSchema } from '../lib/manifestLayout.js'
+import { normalizeLayoutBlocks } from '../lib/layoutBlocks.js'
+import { normalizePresentation, presentationStyle } from '../lib/presentation.js'
 import { AgentGlyph, WorkspaceLoading } from './RuntimePrimitives.jsx'
 
 const FormRenderer = lazy(() => import('./FormRenderer.jsx'))

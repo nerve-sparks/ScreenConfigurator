@@ -4,6 +4,31 @@
   "name": "Export Preview",
   "description": "Validated standalone agent frontend",
   "presentation": {},
+  "scorecard": {
+    "name": "Export Preview Agent",
+    "agent_id": "export-preview",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "details": {
+          "type": "string",
+          "title": "Details"
+        }
+      },
+      "required": []
+    },
+    "connection": {
+      "url": "",
+      "method": "POST",
+      "protocol": "REST",
+      "timeout_ms": 30000,
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer",
+      "auth_mode": "api_key",
+      "body_format": "json",
+      "has_api_key": false
+    }
+  },
   "screen_ids": [
     "welcome"
   ],

@@ -50,25 +50,26 @@ SOURCE_ARCHIVE_FILES = (
     "package-lock.json",
     "package.json",
     "vite.config.js",
-    "src/AgentFlow.jsx",
     "src/App.jsx",
-    "src/ContentExperience.jsx",
-    "src/FormRenderer.jsx",
-    "src/LayoutRenderer.jsx",
-    "src/RuntimePrimitives.jsx",
-    "src/ScreenExperience.jsx",
-    "src/Wizard.jsx",
-    "src/layoutBlocks.js",
     "src/main.jsx",
-    "src/manifestLayout.js",
-    "src/presentation.js",
-    "src/releaseLoader.js",
     "src/styles.css",
-    "src/submitAgent.js",
+    "src/components/AgentFlow.jsx",
+    "src/components/ContentExperience.jsx",
+    "src/components/FormRenderer.jsx",
+    "src/components/LayoutRenderer.jsx",
+    "src/components/RuntimePrimitives.jsx",
+    "src/components/ScreenExperience.jsx",
+    "src/components/Wizard.jsx",
+    "src/lib/api.js",
+    "src/lib/layoutBlocks.js",
+    "src/lib/manifestLayout.js",
+    "src/lib/presentation.js",
+    "src/lib/releaseLoader.js",
+    "src/pages/AgentPage.jsx",
 )
 REQUIRED_TEMPLATE_FILES = SOURCE_ARCHIVE_FILES + (
     "README.template.md",
-    "src/agent-release.json",
+    "src/data/agent-release.json",
 )
 
 
@@ -345,7 +346,7 @@ def build_frontend_archive(release: dict) -> tuple[bytes, str]:
             "package.json": package_bytes,
             "package-lock.json": lock_bytes,
             "preview.html": preview,
-            "src/agent-release.json": release_bytes,
+            "src/data/agent-release.json": release_bytes,
         }
     )
 
