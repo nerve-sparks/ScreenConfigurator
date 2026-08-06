@@ -8,6 +8,10 @@ import {
 } from '../lib/api.js'
 import { saveFrontendArchive } from '../lib/frontendDownload.js'
 import { screenIdFrom } from '../lib/screenIdentity.js'
+import {
+  formatRelativeTime,
+  publishedAgentHref,
+} from '../lib/userDisplay.js'
 import { SparkIcon, WorkspaceLoading } from '../components/StudioShell.jsx'
 
 const FILTERS = [
@@ -16,6 +20,21 @@ const FILTERS = [
   { value: 'published', label: 'Published' },
   { value: 'archived', label: 'Archived' },
 ]
+
+function agentStatus(agent) {
+  if (agent.is_archived) return { label: 'Archived', tone: 'archived' }
+  if (Number.isInteger(agent.latest_release) && agent.has_unpublished_changes) {
+    return { label: 'Draft changes', tone: 'draft' }
+  }
+  if (Number.isInteger(agent.latest_release)) {
+    return { label: 'Published', tone: 'published' }
+  }
+  return { label: 'Draft', tone: 'draft' }
+}
+
+function agentUpdatedAt(agent) {
+  return agent.updated_at || agent.draft_updated_at || null
+}
 
 export default function AgentLibraryPage() {
   const navigate = useNavigate()
@@ -138,13 +157,37 @@ export default function AgentLibraryPage() {
 
   return (
     <main className="app-main library-page agent-library-page">
-      <section className="route-page-heading library-heading" aria-labelledby="library-title">
-        <div>
-          <span className="hero-eyebrow"><SparkIcon size={16} /> Agent projects</span>
+      <section className="library-hero" aria-labelledby="library-title">
+        <div className="library-hero-copy">
+          <span className="hero-eyebrow"><SparkIcon size={16} /> Workspace</span>
           <h1 id="library-title">Agent library</h1>
-          <p>Create an agent, plan its screens, approve them, and publish.</p>
+          <p>
+            Build multi-screen agent experiences, publish immutable releases,
+            and open the live runtime when you are ready.
+          </p>
+          {!loading && !error && agents.length > 0 && (
+            <ul className="library-hero-stats" aria-label="Library summary">
+              <li>
+                <strong>{counts.active}</strong>
+                <span>Active</span>
+              </li>
+              <li>
+                <strong>{counts.published}</strong>
+                <span>Published</span>
+              </li>
+              <li>
+                <strong>{counts.draft}</strong>
+                <span>With drafts</span>
+              </li>
+            </ul>
+          )}
         </div>
-        <Link className="btn btn-primary" to="/studio/agents/new">+ New agent</Link>
+        <div className="library-hero-actions">
+          <Link className="btn btn-primary" to="/studio/agents/new">
+            New agent
+          </Link>
+          
+        </div>
       </section>
 
       {notice && <div className="alert alert-success" role="status">{notice}</div>}
@@ -166,8 +209,11 @@ export default function AgentLibraryPage() {
         <section className="library-empty">
           <span className="empty-spark"><SparkIcon size={32} /></span>
           <span className="section-kicker">No agent projects yet</span>
-          <h2>Create your first multi-screen agent experience</h2>
-          <p>Describe an agent, plan screens, approve them, and publish.</p>
+          <h2>Create your first agent</h2>
+          <p>
+            Describe an agent, plan its screens, approve the journey, then publish
+            a release you can open in a new tab.
+          </p>
           <Link className="btn btn-primary" to="/studio/agents/new">New agent</Link>
         </section>
       )}
@@ -202,115 +248,157 @@ export default function AgentLibraryPage() {
           </section>
 
           <div className="library-results-meta" role="status">
-            <span>{visible.length} of {agents.length} agents</span>
+            <span>
+              {visible.length === 0
+                ? 'No agents match this view'
+                : `${visible.length} of ${agents.length} agents`}
+            </span>
+            {query && (
+              <button
+                type="button"
+                className="btn btn-link"
+                onClick={() => setQuery('')}
+              >
+                Clear search
+              </button>
+            )}
           </div>
 
-          <section className="screen-library-grid" aria-label="Agent projects">
-            {visible.map((agent) => (
-              <article
-                className={`screen-library-card agent-project-card${agent.is_archived ? ' is-archived' : ''}`}
-                key={agent.agent_id}
+          {visible.length === 0 ? (
+            <section className="library-empty library-no-results">
+              <span className="section-kicker">No matches</span>
+              <h2>Nothing in this filter</h2>
+              <p>Try another status or clear the search.</p>
+              <button
+                type="button"
+                className="btn btn-outline-secondary"
+                onClick={() => {
+                  setFilter('active')
+                  setQuery('')
+                }}
               >
-                <div className="library-card-heading">
-                  <span className="library-card-icon"><SparkIcon size={20} /></span>
-                  <div>
-                    <span className="section-kicker">
-                      {agent.is_archived ? 'Archived agent' : 'Agent project'}
-                    </span>
-                    <h2>{agent.name || agent.agent_id}</h2>
-                    <small>{agent.agent_id}</small>
-                  </div>
-                  <div className="library-statuses">
-                    {agent.is_archived && <span className="library-archived-status">Archived</span>}
-                    {agent.has_unpublished_changes && <span className="library-draft-status">Draft</span>}
-                    {Number.isInteger(agent.latest_release) && (
-                      <span className="library-version">release {agent.latest_release}</span>
-                    )}
-                  </div>
-                </div>
-                <p>
-                  {agent.screen_count} active screen{agent.screen_count === 1 ? '' : 's'}
-                  {' · '}
-                  {Number.isInteger(agent.latest_release)
-                    ? `published release ${agent.latest_release}`
-                    : 'not published yet'}
-                </p>
-                <div className="library-card-actions">
-                  {!agent.is_archived && (
-                    <Link
-                      className="btn btn-primary"
-                      to={`/studio/agents/${encodeURIComponent(agent.agent_id)}`}
-                    >
-                      Continue
-                    </Link>
-                  )}
-                  {Number.isInteger(agent.latest_release) && (
-                    <Link
-                      className="btn btn-outline-secondary"
-                      to={`/agents/${encodeURIComponent(agent.agent_id)}`}
-                    >
-                      Open published
-                    </Link>
-                  )}
-                  {Number.isInteger(agent.latest_release) ? (
-                    <button
-                      type="button"
-                      className="btn btn-outline-secondary"
-                      disabled={exportingAgentIds.includes(agent.agent_id)}
-                      onClick={() => downloadFrontend(agent)}
-                    >
-                      {exportingAgentIds.includes(agent.agent_id)
-                        ? 'Preparing download…'
-                        : 'Download frontend'}
-                    </button>
-                  ) : (
-                    <>
+                Show active agents
+              </button>
+            </section>
+          ) : (
+            <section className="screen-library-grid" aria-label="Agent projects">
+              {visible.map((agent) => {
+                const status = agentStatus(agent)
+                const updatedLabel = formatRelativeTime(agentUpdatedAt(agent))
+                const publishedHref = Number.isInteger(agent.latest_release)
+                  ? publishedAgentHref(agent.agent_id, agent.latest_release)
+                  : null
+                const continueHref = `/studio/agents/${encodeURIComponent(agent.agent_id)}`
+                const primaryAction = agent.is_archived
+                  ? null
+                  : Number.isInteger(agent.latest_release) && !agent.has_unpublished_changes
+                    ? { label: 'Continue', href: continueHref, tone: 'secondary' }
+                    : { label: agent.has_unpublished_changes && Number.isInteger(agent.latest_release) ? 'Continue editing' : 'Continue', href: continueHref, tone: 'primary' }
+
+                return (
+                  <article
+                    className={`screen-library-card agent-project-card${agent.is_archived ? ' is-archived' : ''}`}
+                    key={agent.agent_id}
+                  >
+                    <div className="library-card-heading">
+                      <span className="library-card-icon"><SparkIcon size={20} /></span>
+                      <div>
+                        <span className="section-kicker">
+                          {agent.screen_count} screen{agent.screen_count === 1 ? '' : 's'}
+                        </span>
+                        <h2>{agent.name || agent.agent_id}</h2>
+                        <small>{agent.agent_id}</small>
+                      </div>
+                      <div className="library-statuses">
+                        <span className={`library-status is-${status.tone}`}>
+                          {status.label}
+                        </span>
+                        {Number.isInteger(agent.latest_release) && (
+                          <span className="library-version">v{agent.latest_release}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="library-card-meta">
+                      <p>
+                        {Number.isInteger(agent.latest_release)
+                          ? `Published release ${agent.latest_release}`
+                          : 'Not published yet'}
+                        {agent.has_unpublished_changes && !agent.is_archived
+                          ? ' · Unpublished changes'
+                          : ''}
+                      </p>
+                      {updatedLabel ? (
+                        <span className="library-updated">Updated {updatedLabel}</span>
+                      ) : null}
+                    </div>
+
+                    <div className="library-card-actions">
+                      {primaryAction && (
+                        <Link
+                          className={`btn ${primaryAction.tone === 'primary' ? 'btn-primary' : 'btn-outline-secondary'}`}
+                          to={primaryAction.href}
+                        >
+                          {primaryAction.label}
+                        </Link>
+                      )}
+                      {publishedHref && (
+                        <a
+                          className="btn btn-outline-secondary"
+                          href={publishedHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Open published
+                        </a>
+                      )}
+                      {!Number.isInteger(agent.latest_release) && !agent.is_archived && (
+                        <Link
+                          className="btn btn-outline-secondary"
+                          to={`${continueHref}?step=publish`}
+                        >
+                          Publish
+                        </Link>
+                      )}
+                      {Number.isInteger(agent.latest_release) ? (
+                        <button
+                          type="button"
+                          className="btn btn-outline-secondary"
+                          disabled={exportingAgentIds.includes(agent.agent_id)}
+                          onClick={() => downloadFrontend(agent)}
+                        >
+                          {exportingAgentIds.includes(agent.agent_id)
+                            ? 'Preparing…'
+                            : 'Download'}
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="btn btn-outline-secondary"
-                        disabled
-                        aria-describedby={`${agent.agent_id}-download-help`}
+                        onClick={() => openDuplicate(agent)}
                       >
-                        Publish to download
+                        Duplicate
                       </button>
-                      <span
-                        id={`${agent.agent_id}-download-help`}
-                        className="sr-only"
+                    </div>
+
+                    <div className="library-card-secondary-actions">
+                      <button
+                        type="button"
+                        className="btn btn-link library-archive-action"
+                        aria-label={`${agent.is_archived ? 'Unarchive' : 'Archive'} ${agent.name}`}
+                        onClick={() => {
+                          setDialog({ type: 'archive', agent })
+                          setDialogError('')
+                        }}
                       >
-                        Publish a validated immutable release before downloading
-                        this agent frontend.
-                      </span>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="btn btn-outline-secondary"
-                    onClick={() => openDuplicate(agent)}
-                  >
-                    Duplicate
-                  </button>
-                </div>
-                <div className="library-card-secondary-actions">
-                  <button
-                    type="button"
-                    className="btn btn-link library-archive-action"
-                    aria-label={`${agent.is_archived ? 'Unarchive' : 'Archive'} ${agent.name}`}
-                    onClick={() => {
-                      setDialog({ type: 'archive', agent })
-                      setDialogError('')
-                    }}
-                  >
-                    {agent.is_archived ? 'Unarchive' : 'Archive'}
-                  </button>
-                  {Number.isInteger(agent.latest_release) && (
-                    <Link className="btn btn-link" to={`/agents/${encodeURIComponent(agent.agent_id)}`}>
-                      Published agent ↗
-                    </Link>
-                  )}
-                </div>
-              </article>
-            ))}
-          </section>
+                        {agent.is_archived ? 'Unarchive' : 'Archive'}
+                      </button>
+                    </div>
+                  </article>
+                )
+              })}
+            </section>
+          )}
         </>
       )}
 

@@ -113,7 +113,7 @@ export function GuestOnly({ children }) {
   const { isAuthenticated } = useAuth()
 
   if (isAuthenticated) {
-    return <Navigate to="/studio/agents/new" replace />
+    return <Navigate to="/library" replace />
   }
 
   return children

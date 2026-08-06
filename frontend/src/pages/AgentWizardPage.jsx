@@ -33,6 +33,7 @@ import {
   withConnectionApiKey,
 } from '../lib/scorecard.js'
 import { WorkspaceLoading } from '../components/StudioShell.jsx'
+import { publishedAgentHref } from '../lib/userDisplay.js'
 
 const STEPS = [
   { id: 'describe', label: 'Describe' },
@@ -98,21 +99,28 @@ async function approveOneScreen(agentId, screen) {
 function WizardSteps({ current }) {
   const currentIndex = STEPS.findIndex((step) => step.id === current)
   return (
-    <ol className="simple-steps" aria-label="Build steps">
-      {STEPS.map((step, index) => {
-        const state = index < currentIndex
-          ? 'is-done'
-          : index === currentIndex
-            ? 'is-current'
-            : ''
-        return (
-          <li key={step.id} className={state}>
-            <span>{index + 1}</span>
-            <strong>{step.label}</strong>
-          </li>
-        )
-      })}
-    </ol>
+    <nav className="wizard-step-chrome" aria-label="Build progress">
+      <ol className="simple-steps">
+        {STEPS.map((step, index) => {
+          const state = index < currentIndex
+            ? 'is-done'
+            : index === currentIndex
+              ? 'is-current'
+              : ''
+          return (
+            <li key={step.id} className={state}>
+              <span aria-hidden="true">{index + 1}</span>
+              <strong>{step.label}</strong>
+            </li>
+          )
+        })}
+      </ol>
+      <p className="wizard-step-caption">
+        Step {Math.max(currentIndex + 1, 1)} of {STEPS.length}
+        {' · '}
+        {STEPS[Math.max(currentIndex, 0)]?.label}
+      </p>
+    </nav>
   )
 }
 
@@ -467,7 +475,7 @@ export default function AgentWizardPage() {
         changeSummary: changeSummary.trim(),
       })
       setPublishedVersion(release.version)
-      setNotice(`Published release ${release.version}.`)
+      setNotice(`Published release ${release.version}. Open it in a new tab below.`)
       await reload(agentId)
     } catch (err) {
       setError(err.message)
@@ -490,9 +498,9 @@ export default function AgentWizardPage() {
         <div className="create-stage">
           <div className="create-stage-top">
             <WizardSteps current="describe" />
-            <Link className="btn btn-outline-secondary create-library-link" to="/library">
-              All agents
-            </Link>
+            {/* <Link className="btn btn-outline-secondary create-library-link" to="/library">
+              Library
+            </Link> */}
           </div>
 
           <section className="create-panel">
@@ -672,10 +680,10 @@ export default function AgentWizardPage() {
           <p className="simple-kicker">Agent Screen Studio</p>
           <h1>{project?.name || 'New agent'}</h1>
           <p className="simple-lead">
-            Four clear steps: describe the agent, plan screens, approve them, then publish.
+            Describe, plan, approve, then publish an immutable agent release.
           </p>
         </div>
-        <Link className="btn btn-outline-secondary" to="/library">All agents</Link>
+        <Link className="btn btn-outline-secondary" to="/library">Library</Link>
       </header>
 
       <WizardSteps current={step} />
@@ -998,13 +1006,34 @@ export default function AgentWizardPage() {
                 </button>
               </div>
               {(publishedVersion || project?.latest_release) && (
-                <div className="simple-actions" style={{ marginTop: 16 }}>
-                  <Link
-                    className="btn btn-outline-secondary"
-                    to={`/agents/${encodeURIComponent(agentId)}?version=${publishedVersion || project.latest_release}`}
-                  >
-                    Open published agent
-                  </Link>
+                <div className="publish-success">
+                  <div>
+                    <strong>
+                      {publishedVersion
+                        ? `Release ${publishedVersion} is live`
+                        : `Release ${project.latest_release} is published`}
+                    </strong>
+                    <p>
+                      Open the published agent runtime in a new browser tab.
+                      Studio stays here so you can keep editing.
+                    </p>
+                  </div>
+                  <div className="simple-actions">
+                    <a
+                      className="btn btn-primary"
+                      href={publishedAgentHref(
+                        agentId,
+                        publishedVersion || project.latest_release,
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Open published agent
+                    </a>
+                    <Link className="btn btn-outline-secondary" to="/library">
+                      Back to library
+                    </Link>
+                  </div>
                 </div>
               )}
             </>

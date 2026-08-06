@@ -10,7 +10,11 @@ import {
   refreshAccessToken,
 } from './auth.js'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+const API_BASE_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
+
+export function getApiBaseUrl() {
+  return API_BASE_URL
+}
 
 // FastAPI errors carry a JSON body of the form {"detail": ...}.
 // Our validation gate returns {"detail": {"message": ..., "errors": [...]}}.

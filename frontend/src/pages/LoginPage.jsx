@@ -13,7 +13,7 @@ export default function LoginPage() {
 
   const redirectTo = location.state?.from && location.state.from !== '/login'
     ? location.state.from
-    : '/studio/agents/new'
+    : '/library'
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -52,8 +52,12 @@ export default function LoginPage() {
       <main className="auth-page">
         <section className="create-panel auth-panel" aria-labelledby="login-heading">
           <div className="create-panel-copy">
+            <p className="auth-kicker">Agent Screen Studio</p>
             <h1 id="login-heading">Sign in</h1>
-            <p>Use your NSAI account to open Agent Screen Studio.</p>
+            <p>
+              Use your NSAI account to open the agent library, build journeys,
+              and publish releases.
+            </p>
           </div>
 
           {error ? (

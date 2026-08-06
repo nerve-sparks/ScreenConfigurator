@@ -14,6 +14,7 @@ const LoginPage = lazy(() => import('./pages/LoginPage.jsx'))
 const LogoutPage = lazy(() => import('./pages/LogoutPage.jsx'))
 const PublishedAgentPage = lazy(() => import('./pages/PublishedAgentPage.jsx'))
 const PublishedScreenPage = lazy(() => import('./pages/PublishedScreenPage.jsx'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage.jsx'))
 
 function RouteBoundary({ children }) {
   return (
@@ -83,6 +84,10 @@ export default function App() {
           element={<RouteBoundary><AgentLibraryPage /></RouteBoundary>}
         />
         <Route
+          path="/settings"
+          element={<RouteBoundary><SettingsPage /></RouteBoundary>}
+        />
+        <Route
           path="/studio/agents/new"
           element={<RouteBoundary><AgentWizardPage /></RouteBoundary>}
         />
@@ -107,7 +112,7 @@ export default function App() {
         path="/"
         element={(
           <RequireAuth>
-            <Navigate to="/studio/agents/new" replace />
+            <Navigate to="/library" replace />
           </RequireAuth>
         )}
       />
