@@ -1,0 +1,91 @@
+{
+  "agent_id": "export-preview",
+  "version": 1,
+  "name": "Export Preview",
+  "description": "Validated standalone agent frontend",
+  "presentation": {},
+  "runtime": {
+    "auth": {
+      "type": "bearer",
+      "header_name": "Authorization",
+      "scheme": "Bearer",
+      "query_param": "api_key",
+      "has_secret": false
+    },
+    "defaults": {
+      "base_url": "",
+      "timeout_ms": 30000,
+      "body_format": "auto"
+    }
+  },
+  "endpoints": [
+    {
+      "id": "primary",
+      "name": "Export Preview Agent",
+      "url": "",
+      "method": "POST",
+      "body_format": "json",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "details": {
+            "type": "string",
+            "title": "Details"
+          }
+        },
+        "required": []
+      },
+      "output_schema": {},
+      "enabled": true
+    }
+  ],
+  "scorecard": {
+    "name": "Export Preview Agent",
+    "agent_id": "export-preview",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "details": {
+          "type": "string",
+          "title": "Details"
+        }
+      },
+      "required": []
+    },
+    "connection": {
+      "url": "",
+      "method": "POST",
+      "protocol": "REST",
+      "timeout_ms": 30000,
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer",
+      "auth_mode": "api_key",
+      "body_format": "json",
+      "has_api_key": false
+    }
+  },
+  "screen_ids": [
+    "welcome"
+  ],
+  "start_screen_id": "welcome",
+  "screens": [
+    {
+      "screen_id": "welcome",
+      "screen_type": "content",
+      "purpose": "information",
+      "name": "Welcome",
+      "description": "Preview template placeholder",
+      "presentation": {},
+      "manifest": {
+        "blocks": [
+          {
+            "id": "welcome-heading",
+            "type": "heading",
+            "level": 2,
+            "text": "Export preview"
+          }
+        ]
+      }
+    }
+  ]
+}
