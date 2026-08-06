@@ -18,6 +18,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from .content_manifest import validate_screen_manifest
 from .manifest_migrations import upgrade_legacy_layout
+from .scorecard import public_scorecard
 
 EXPORT_TEMPLATE_ROOT = Path(__file__).resolve().parent.parent / "export_templates"
 SOURCE_TEMPLATE_ROOT = EXPORT_TEMPLATE_ROOT / "source"
@@ -243,6 +244,7 @@ def sanitize_release(release: Any) -> dict:
             required=False,
         ),
         "presentation": _public_presentation(release.get("presentation", {})),
+        "scorecard": public_scorecard(release.get("scorecard") or {}),
         "screen_ids": list(screen_ids),
         "start_screen_id": start_screen_id,
         "screens": sanitized_screens,

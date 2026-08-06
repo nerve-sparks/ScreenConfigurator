@@ -22,6 +22,22 @@ async function errorMessageFrom(response) {
     if (Array.isArray(detail?.errors)) {
       return [detail.message ?? 'Validation failed.', ...detail.errors].join('\n')
     }
+    if (detail && typeof detail === 'object') {
+      const parts = []
+      if (typeof detail.message === 'string') parts.push(detail.message)
+      if (typeof detail.hint === 'string') parts.push(detail.hint)
+      if (detail.agent_body != null) {
+        const body = detail.agent_body
+        const output = body?.result?.output
+        if (typeof output === 'string') {
+          parts.push(output)
+        } else {
+          parts.push(typeof body === 'string' ? body : JSON.stringify(body))
+        }
+      }
+      if (parts.length) return parts.join('\n')
+      return JSON.stringify(detail)
+    }
     if (detail !== undefined) return JSON.stringify(detail)
   } catch {
     // Body was not JSON; fall through to the generic message.
@@ -341,6 +357,18 @@ export async function saveAgentProject(agentId, payload) {
   return response.json()
 }
 
+export async function updateAgentScorecard(agentId, scorecard) {
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/scorecard`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ scorecard }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
 export async function generateScreenPlan(agentId, description = '') {
   const response = await apiFetch(
     `/agents/${encodeURIComponent(agentId)}/screen-plan/generate`,
@@ -500,6 +528,21 @@ export async function loadAgentRelease(agentId, version = null) {
     throw new Error('Backend returned an invalid agent release.')
   }
   return result
+}
+
+export async function runPublishedAgent(agentId, { valuesByScreen, version = null }) {
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/published/run`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        values_by_screen: valuesByScreen,
+        ...(Number.isInteger(version) ? { version } : {}),
+      }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
 }
 
 export async function downloadAgentFrontend(agentId, version) {

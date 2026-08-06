@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
@@ -31,10 +31,13 @@ from models.schemas import (
     GenerateProjectScreenRequest,
     GenerateScreenPlanRequest,
     PublishAgentProjectRequest,
+    RunPublishedAgentRequest,
     SaveAgentProjectRequest,
     SaveProjectScreenRequest,
+    UpdateAgentScorecardRequest,
 )
-from utils.scorecard import build_scorecard_brief, normalize_scorecard
+from utils.scorecard import build_scorecard_brief, normalize_scorecard, public_scorecard
+from services.agent_run import forward_agent_run
 from utils.project_db import (
     create_project,
     duplicate_agent_project,
@@ -50,6 +53,7 @@ from utils.project_db import (
     publish_project_release,
     restore_release,
     save_project,
+    save_project_scorecard,
     set_project_archived,
     set_project_screen_archived,
 )
@@ -118,6 +122,34 @@ def get_agent_project(agent_id: str) -> dict:
         raise HTTPException(
             status_code=404,
             detail=f"No agent project found for '{agent_id}'.",
+        )
+    return common._project_payload(project)
+
+@router.put("/agents/{agent_id}/scorecard")
+def put_agent_project_scorecard(
+    agent_id: str, request: UpdateAgentScorecardRequest
+) -> dict:
+    """Attach or replace the agent scorecard (connection.url / api_key, schemas)."""
+    agent_id = common._validated_agent_id(agent_id)
+    try:
+        scorecard = normalize_scorecard(request.scorecard)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        if not project_exists(agent_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        project = save_project_scorecard(agent_id, scorecard)
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if project is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The agent project changed. Reload it before saving again.",
         )
     return common._project_payload(project)
 
@@ -594,7 +626,36 @@ def get_published_agent_release(
             status_code=404,
             detail=f"No published agent release found for '{agent_id}'.",
         )
+    release = dict(release)
+    release["scorecard"] = public_scorecard(release.get("scorecard") or {})
     return release
+
+
+@router.post("/agents/{agent_id}/published/run")
+async def run_published_agent(
+    agent_id: str,
+    request: RunPublishedAgentRequest,
+    http_request: Request,
+) -> dict:
+    """Map completed screen values onto the scorecard and call connection.url."""
+    agent_id = common._validated_agent_id(agent_id)
+    try:
+        release = get_release(agent_id, request.version)
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if release is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No published agent release found for '{agent_id}'.",
+        )
+    return await forward_agent_run(
+        scorecard=release.get("scorecard") or {},
+        values_by_screen=request.values_by_screen or {},
+        studio_agent_id=agent_id,
+        release_version=int(release.get("version") or 1),
+        caller_authorization=http_request.headers.get("Authorization") or "",
+    )
+
 
 @router.post("/agents/{agent_id}/releases/{version}/restore")
 def restore_agent_release(agent_id: str, version: int) -> dict:

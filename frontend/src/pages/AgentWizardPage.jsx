@@ -9,6 +9,7 @@ import {
   loadProjectScreenDraft,
   publishAgentProject,
   saveProjectScreenDraft,
+  updateAgentScorecard,
   validateScreen,
 } from '../lib/api.js'
 import AgentFlow, { orderedJourney } from '../components/AgentFlow.jsx'
@@ -23,8 +24,13 @@ import {
 import { screenIdFrom } from '../lib/screenIdentity.js'
 import {
   descriptionFromScorecard,
+  extractConnectionApiKey,
+  extractConnectionAuthMode,
+  extractConnectionAuthScheme,
   parseScorecardText,
   scorecardSummary,
+  scorecardTextWithoutSecrets,
+  withConnectionApiKey,
 } from '../lib/scorecard.js'
 import { WorkspaceLoading } from '../components/StudioShell.jsx'
 
@@ -122,6 +128,9 @@ export default function AgentWizardPage() {
   const [description, setDescription] = useState('')
   const [scorecard, setScorecard] = useState(null)
   const [scorecardText, setScorecardText] = useState('')
+  const [connectionApiKey, setConnectionApiKey] = useState('')
+  const [authMode, setAuthMode] = useState('session')
+  const [authScheme, setAuthScheme] = useState('Bearer')
   const [changeSummary, setChangeSummary] = useState('Initial agent release')
   const [loading, setLoading] = useState(Boolean(routeAgentId))
   const [busy, setBusy] = useState(false)
@@ -168,9 +177,12 @@ export default function AgentWizardPage() {
     setScorecard(loaded.scorecard && Object.keys(loaded.scorecard).length
       ? loaded.scorecard
       : null)
+    setConnectionApiKey(extractConnectionApiKey(loaded.scorecard))
+    setAuthMode(extractConnectionAuthMode(loaded.scorecard))
+    setAuthScheme(extractConnectionAuthScheme(loaded.scorecard))
     setScorecardText(
       loaded.scorecard && Object.keys(loaded.scorecard).length
-        ? JSON.stringify(loaded.scorecard, null, 2)
+        ? scorecardTextWithoutSecrets(loaded.scorecard)
         : '',
     )
     return loaded
@@ -201,8 +213,8 @@ export default function AgentWizardPage() {
   }
 
   const scorecardInfo = useMemo(
-    () => scorecardSummary(scorecard || project?.scorecard),
-    [scorecard, project],
+    () => scorecardSummary(scorecard || project?.scorecard, connectionApiKey),
+    [scorecard, project, connectionApiKey],
   )
 
   const applyScorecardText = (text, { fillEmpty = true } = {}) => {
@@ -213,14 +225,40 @@ export default function AgentWizardPage() {
       return
     }
     const parsed = parseScorecardText(trimmed)
-    setScorecard(parsed)
-    setScorecardText(JSON.stringify(parsed, null, 2))
+    const keyFromJson = extractConnectionApiKey(parsed)
+    if (keyFromJson && !connectionApiKey.trim()) {
+      setConnectionApiKey(keyFromJson)
+    }
+    const withoutSecrets = (() => {
+      if (!parsed.connection || typeof parsed.connection !== 'object') return parsed
+      const connection = { ...parsed.connection }
+      delete connection.api_key
+      delete connection.token
+      delete connection.access_token
+      delete connection.bearer_token
+      delete connection.authorization
+      return { ...parsed, connection }
+    })()
+    setScorecard(withoutSecrets)
+    setScorecardText(scorecardTextWithoutSecrets(withoutSecrets))
     if (fillEmpty && !name.trim() && parsed.name) {
       setName(String(parsed.name).slice(0, 80))
     }
     if (fillEmpty && !description.trim()) {
       setDescription(descriptionFromScorecard(parsed).slice(0, 5000))
     }
+  }
+
+  const buildScorecardForSave = () => {
+    let next = scorecard
+    if (scorecardText.trim()) {
+      next = parseScorecardText(scorecardText)
+    }
+    if (!next) return null
+    return withConnectionApiKey(next, connectionApiKey, {
+      authMode,
+      authScheme,
+    })
   }
 
   const handleScorecardBlur = () => {
@@ -240,6 +278,9 @@ export default function AgentWizardPage() {
   const clearScorecard = () => {
     setScorecard(null)
     setScorecardText('')
+    setConnectionApiKey('')
+    setAuthMode('session')
+    setAuthScheme('Bearer')
   }
 
   const handleCreate = async (event) => {
@@ -249,11 +290,8 @@ export default function AgentWizardPage() {
     setBusy(true)
     setError('')
     try {
-      let nextScorecard = scorecard
-      if (scorecardText.trim()) {
-        nextScorecard = parseScorecardText(scorecardText)
-        setScorecard(nextScorecard)
-      }
+      const nextScorecard = buildScorecardForSave()
+      if (nextScorecard) setScorecard(nextScorecard)
       const created = await createAgentProject({
         name: name.trim(),
         description: description.trim(),
@@ -408,8 +446,21 @@ export default function AgentWizardPage() {
     setError('')
     setNotice('')
     try {
+      let nextProject = project
+      const nextScorecard = buildScorecardForSave()
+        || (project.scorecard
+          ? withConnectionApiKey(project.scorecard, connectionApiKey, {
+            authMode,
+            authScheme,
+          })
+          : null)
+      if (nextScorecard) {
+        setScorecard(nextScorecard)
+        nextProject = await updateAgentScorecard(agentId, nextScorecard)
+        setProject(nextProject)
+      }
       const release = await publishAgentProject(agentId, {
-        projectRevision: project.revision,
+        projectRevision: nextProject.revision,
         screenRevisions: Object.fromEntries(
           screens.map((screen) => [screen.screen_id, screen.revision]),
         ),
@@ -474,7 +525,10 @@ export default function AgentWizardPage() {
                 <div className="scorecard-attach-head">
                   <div>
                     <strong>Agent scorecard</strong>
-                    <p>Paste the agent scorecard JSON (input_schema, connection, agent_id).</p>
+                    <p>
+                      Paste the agent scorecard JSON (input_schema, connection.url,
+                      agent_id). Put the API key in the field below — not in the JSON.
+                    </p>
                   </div>
                   {scorecardText.trim() && (
                     <button type="button" className="btn btn-link" onClick={clearScorecard}>
@@ -490,10 +544,54 @@ export default function AgentWizardPage() {
                     value={scorecardText}
                     onChange={(event) => setScorecardText(event.target.value)}
                     onBlur={handleScorecardBlur}
-                    placeholder='{ "name": "AI Business proposal agent", "agent_id": "...", "input_schema": { ... } }'
+                    placeholder='{ "name": "...", "connection": { "url": "https://..." }, "input_schema": { ... } }'
                     spellCheck={false}
                   />
                 </label>
+                <label className="scorecard-api-key">
+                  Agent auth
+                  <select
+                    className="form-control"
+                    value={authMode}
+                    onChange={(event) => setAuthMode(event.target.value)}
+                  >
+                    <option value="session">Use my Studio login token</option>
+                    <option value="api_key">API key / access token</option>
+                    <option value="api_key_or_session">API key, else Studio login</option>
+                  </select>
+                </label>
+                {authMode !== 'session' && (
+                  <>
+                    <label className="scorecard-api-key">
+                      Token format
+                      <select
+                        className="form-control"
+                        value={authScheme}
+                        onChange={(event) => setAuthScheme(event.target.value)}
+                      >
+                        <option value="Bearer">Authorization: Bearer &lt;token&gt;</option>
+                        <option value="">Authorization: &lt;token&gt; (raw)</option>
+                      </select>
+                    </label>
+                    <label className="scorecard-api-key">
+                      Agent API key / access token
+                      <input
+                        className="form-control"
+                        type="password"
+                        autoComplete="off"
+                        value={connectionApiKey}
+                        onChange={(event) => setConnectionApiKey(event.target.value)}
+                        placeholder="Paste token only — do not include the word Bearer"
+                      />
+                    </label>
+                  </>
+                )}
+                {authMode === 'session' && (
+                  <p className="scorecard-hint">
+                    Studio will forward your logged-in access token as{' '}
+                    <code>Authorization: Bearer …</code> to the agent URL.
+                  </p>
+                )}
                 {scorecardInfo ? (
                   <div className="scorecard-summary">
                     <div className="scorecard-summary-meta">
@@ -502,6 +600,22 @@ export default function AgentWizardPage() {
                       {scorecardInfo.version && <em>v{scorecardInfo.version}</em>}
                     </div>
                     <ul>
+                      {scorecardInfo.connection?.url ? (
+                        <li>
+                          <strong>connection.url</strong>
+                          <span>{scorecardInfo.connection.url}</span>
+                        </li>
+                      ) : null}
+                      <li>
+                        <strong>api_key</strong>
+                        <span>
+                          {authMode === 'session'
+                            ? 'using Studio login token'
+                            : connectionApiKey.trim() || scorecardInfo.connection?.hasApiKey
+                              ? 'set in the field above'
+                              : 'optional — needed if the agent requires Authorization'}
+                        </span>
+                      </li>
                       {scorecardInfo.fieldCount > 0 ? (
                         scorecardInfo.fields.map((field) => (
                           <li key={field.name}>
@@ -799,6 +913,67 @@ export default function AgentWizardPage() {
                   <div><dt>Latest release</dt><dd>{project.latest_release}</dd></div>
                 )}
               </dl>
+              <div className="scorecard-attach">
+                <div className="scorecard-attach-head">
+                  <div>
+                    <strong>Agent authentication</strong>
+                    <p>
+                      agent-builder.nervesparks.com needs your Studio login JWT
+                      (<code>Authorization: Bearer &lt;access_token&gt;</code>),
+                      not a short API key string. Prefer “Use my Studio login token”.
+                    </p>
+                  </div>
+                </div>
+                <label className="scorecard-api-key">
+                  Auth mode
+                  <select
+                    className="form-control"
+                    value={authMode}
+                    onChange={(event) => setAuthMode(event.target.value)}
+                  >
+                    <option value="session">Use my Studio login token</option>
+                    <option value="api_key">API key / access token</option>
+                    <option value="api_key_or_session">API key, else Studio login</option>
+                  </select>
+                </label>
+                {authMode !== 'session' && (
+                  <>
+                    <label className="scorecard-api-key">
+                      Token format
+                      <select
+                        className="form-control"
+                        value={authScheme}
+                        onChange={(event) => setAuthScheme(event.target.value)}
+                      >
+                        <option value="Bearer">Authorization: Bearer &lt;token&gt;</option>
+                        <option value="">Authorization: &lt;token&gt; (raw)</option>
+                      </select>
+                    </label>
+                    <label className="scorecard-api-key">
+                      <span className="sr-only">Agent API key</span>
+                      <input
+                        className="form-control"
+                        type="password"
+                        autoComplete="off"
+                        value={connectionApiKey}
+                        onChange={(event) => setConnectionApiKey(event.target.value)}
+                        placeholder="Paste token only — do not include Bearer"
+                      />
+                    </label>
+                  </>
+                )}
+                <p className="scorecard-hint">
+                  {scorecardInfo?.connection?.url
+                    ? `URL: ${scorecardInfo.connection.url}`
+                    : 'No connection.url on the scorecard yet.'}
+                  {' · '}
+                  {authMode === 'session'
+                    ? 'Will forward Studio login token'
+                    : connectionApiKey.trim()
+                      ? 'API key ready'
+                      : 'API key empty'}
+                </p>
+              </div>
               <label className="simple-form">
                 What changed?
                 <textarea

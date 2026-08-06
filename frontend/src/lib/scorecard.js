@@ -75,9 +75,15 @@ export function scorecardInputFields(scorecard) {
   }))
 }
 
-export function scorecardSummary(scorecard) {
+export function scorecardSummary(scorecard, apiKey = '') {
   if (!scorecard) return null
   const fields = scorecardInputFields(scorecard)
+  const hasKeyFromCard = Boolean(
+    scorecard.connection?.api_key
+      || scorecard.connection?.authorization
+      || scorecard.connection?.token
+      || scorecard.connection?.has_api_key,
+  )
   return {
     name: typeof scorecard.name === 'string' ? scorecard.name.trim() : '',
     runtimeId: scorecard.agent_id || scorecard.node_id || '',
@@ -90,9 +96,70 @@ export function scorecardSummary(scorecard) {
           protocol: scorecard.connection.protocol || '',
           method: scorecard.connection.method || '',
           url: scorecard.connection.url || '',
+          hasApiKey: hasKeyFromCard || Boolean(typeof apiKey === 'string' && apiKey.trim()),
         }
-      : null,
+      : (typeof apiKey === 'string' && apiKey.trim()
+        ? { protocol: '', method: '', url: '', hasApiKey: true }
+        : null),
   }
+}
+
+/** Merge a separately entered API key / auth prefs into scorecard.connection. */
+export function withConnectionApiKey(scorecard, apiKey, options = {}) {
+  if (!scorecard || typeof scorecard !== 'object') return scorecard
+  const key = typeof apiKey === 'string' ? apiKey.trim() : ''
+  const authMode = options.authMode || 'api_key'
+  const authScheme = options.authScheme != null ? options.authScheme : 'Bearer'
+  const connection = {
+    ...(scorecard.connection && typeof scorecard.connection === 'object'
+      ? scorecard.connection
+      : {}),
+    auth_mode: authMode,
+    auth_scheme: authScheme,
+  }
+  if (key) {
+    connection.api_key = key
+  } else if (authMode === 'session') {
+    delete connection.api_key
+  }
+  return { ...scorecard, connection }
+}
+
+export function extractConnectionAuthMode(scorecard) {
+  const mode = scorecard?.connection?.auth_mode
+  if (mode === 'session' || mode === 'api_key_or_session' || mode === 'api_key') {
+    return mode
+  }
+  return extractConnectionApiKey(scorecard) ? 'api_key' : 'session'
+}
+
+export function extractConnectionAuthScheme(scorecard) {
+  const scheme = scorecard?.connection?.auth_scheme
+  if (typeof scheme === 'string') return scheme
+  return 'Bearer'
+}
+
+/** Scorecard JSON for the textarea — secrets stay in the dedicated key field. */
+export function scorecardTextWithoutSecrets(scorecard) {
+  if (!scorecard || typeof scorecard !== 'object') return ''
+  const clone = structuredClone(scorecard)
+  if (clone.connection && typeof clone.connection === 'object') {
+    delete clone.connection.api_key
+    delete clone.connection.token
+    delete clone.connection.access_token
+    delete clone.connection.bearer_token
+    delete clone.connection.authorization
+  }
+  return JSON.stringify(clone, null, 2)
+}
+
+export function extractConnectionApiKey(scorecard) {
+  if (!scorecard?.connection || typeof scorecard.connection !== 'object') return ''
+  for (const key of ['api_key', 'token', 'access_token', 'bearer_token']) {
+    const value = scorecard.connection[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
 }
 
 export function descriptionFromScorecard(scorecard, fallback = '') {

@@ -79,6 +79,10 @@ class SaveAgentProjectRequest(BaseModel):
     revision: str = Field(min_length=1, max_length=64)
 
 
+class UpdateAgentScorecardRequest(BaseModel):
+    scorecard: dict
+
+
 class GenerateScreenPlanRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
 
@@ -108,3 +112,8 @@ class PublishAgentProjectRequest(BaseModel):
     project_revision: str = Field(min_length=1, max_length=64)
     screen_revisions: dict[str, str]
     change_summary: str = Field(min_length=1, max_length=240)
+
+
+class RunPublishedAgentRequest(BaseModel):
+    values_by_screen: dict = Field(default_factory=dict)
+    version: Optional[int] = None

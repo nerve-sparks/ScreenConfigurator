@@ -350,6 +350,27 @@ def save_project(
     return get_project(agent_id)
 
 
+def save_project_scorecard(agent_id: str, scorecard: dict) -> Optional[dict]:
+    """Replace the project's attached agent scorecard (including connection secrets)."""
+    project = get_project(agent_id)
+    if project is None:
+        return None
+    now = db._utc_now()
+    result = _projects.update_one(
+        {"agent_id": agent_id, "revision": project["revision"]},
+        {
+            "$set": {
+                "scorecard": scorecard or {},
+                "revision": uuid4().hex,
+                "updated_at": now,
+            }
+        },
+    )
+    if result.matched_count == 0:
+        return None
+    return get_project(agent_id)
+
+
 def add_screen_to_project(agent_id: str, screen_id: str) -> dict:
     project = get_project(agent_id)
     if project is None:
@@ -711,6 +732,7 @@ def publish_project_release(
             "name": project["name"],
             "description": project.get("description", ""),
             "presentation": deepcopy(project.get("presentation", {})),
+            "scorecard": deepcopy(project.get("scorecard") or {}),
             "screen_ids": list(project["screen_ids"]),
             "start_screen_id": project["start_screen_id"],
             "screens": snapshots,

@@ -52,6 +52,7 @@ export default function App() {
         agentId: release.agent_id,
         releaseVersion: release.version,
         valuesByScreen,
+        scorecard: release.scorecard,
       })
       setSubmitted(valuesByScreen)
     } catch (error) {
