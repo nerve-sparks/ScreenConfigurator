@@ -313,7 +313,14 @@ export async function setScreenArchived(agentId, archived) {
   return result
 }
 
-export async function createAgentProject({ name, description, presentation, scorecard }) {
+export async function createAgentProject({
+  name,
+  description,
+  presentation,
+  scorecard,
+  runtime,
+  endpoints,
+}) {
   const response = await apiFetch('/agents', {
     method: 'POST',
     body: JSON.stringify({
@@ -321,6 +328,8 @@ export async function createAgentProject({ name, description, presentation, scor
       description,
       presentation,
       ...(scorecard ? { scorecard } : {}),
+      ...(runtime ? { runtime } : {}),
+      ...(endpoints ? { endpoints } : {}),
     }),
   })
   if (!response.ok) throw await responseError(response)
@@ -367,6 +376,30 @@ export async function updateAgentScorecard(agentId, scorecard) {
     {
       method: 'PUT',
       body: JSON.stringify({ scorecard }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function updateAgentRuntime(agentId, runtime) {
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/runtime`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ runtime }),
+    },
+  )
+  if (!response.ok) throw await responseError(response)
+  return response.json()
+}
+
+export async function updateAgentEndpoints(agentId, endpoints) {
+  const response = await apiFetch(
+    `/agents/${encodeURIComponent(agentId)}/endpoints`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ endpoints }),
     },
   )
   if (!response.ok) throw await responseError(response)

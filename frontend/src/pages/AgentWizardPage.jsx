@@ -9,6 +9,8 @@ import {
   loadProjectScreenDraft,
   publishAgentProject,
   saveProjectScreenDraft,
+  updateAgentEndpoints,
+  updateAgentRuntime,
   updateAgentScorecard,
   validateScreen,
 } from '../lib/api.js'
@@ -24,14 +26,21 @@ import {
 import { screenIdFrom } from '../lib/screenIdentity.js'
 import {
   descriptionFromScorecard,
-  extractConnectionApiKey,
-  extractConnectionAuthMode,
-  extractConnectionAuthScheme,
-  parseScorecardText,
   scorecardSummary,
   scorecardTextWithoutSecrets,
-  withConnectionApiKey,
 } from '../lib/scorecard.js'
+import {
+  AUTH_TYPES,
+  BODY_FORMATS,
+  defaultRuntime,
+  emptyEndpoint,
+  endpointFromScorecardText,
+  hydrateProjectConfig,
+  normalizeEndpoints,
+  normalizeRuntime,
+  runtimeForSave,
+  runtimeSummary,
+} from '../lib/runtimeConfig.js'
 import { WorkspaceLoading } from '../components/StudioShell.jsx'
 import { publishedAgentHref } from '../lib/userDisplay.js'
 
@@ -124,6 +133,34 @@ function WizardSteps({ current }) {
   )
 }
 
+/** Build editable scorecard-shaped JSON for one endpoint editor. */
+function jsonTextForEndpoint(endpoint, scorecardFallback = null) {
+  if (scorecardFallback && typeof scorecardFallback === 'object'
+    && Object.keys(scorecardFallback).length) {
+    return scorecardTextWithoutSecrets(scorecardFallback)
+  }
+  if (!endpoint || typeof endpoint !== 'object') return ''
+  const hasSchema = endpoint.input_schema
+    && typeof endpoint.input_schema === 'object'
+    && Object.keys(endpoint.input_schema).length > 0
+  if (!endpoint.url && !hasSchema) return ''
+  const payload = {
+    name: endpoint.name || undefined,
+    connection: {
+      url: endpoint.url || undefined,
+      method: endpoint.method || 'POST',
+      body_format: endpoint.body_format || 'auto',
+    },
+    input_schema: hasSchema ? endpoint.input_schema : undefined,
+    output_schema: endpoint.output_schema
+      && typeof endpoint.output_schema === 'object'
+      && Object.keys(endpoint.output_schema).length
+      ? endpoint.output_schema
+      : undefined,
+  }
+  return JSON.stringify(payload, null, 2)
+}
+
 export default function AgentWizardPage() {
   const { agentId: routeAgentId } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -135,10 +172,10 @@ export default function AgentWizardPage() {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [scorecard, setScorecard] = useState(null)
-  const [scorecardText, setScorecardText] = useState('')
-  const [connectionApiKey, setConnectionApiKey] = useState('')
-  const [authMode, setAuthMode] = useState('session')
-  const [authScheme, setAuthScheme] = useState('Bearer')
+  const [endpointJsonTexts, setEndpointJsonTexts] = useState(() => [''])
+  const [runtime, setRuntime] = useState(() => defaultRuntime())
+  const [endpoints, setEndpoints] = useState(() => [emptyEndpoint(0)])
+  const [authSecret, setAuthSecret] = useState('')
   const [changeSummary, setChangeSummary] = useState('Initial agent release')
   const [loading, setLoading] = useState(Boolean(routeAgentId))
   const [busy, setBusy] = useState(false)
@@ -182,17 +219,20 @@ export default function AgentWizardPage() {
     })))
     setDescription(loaded.description || '')
     setName(loaded.name || '')
-    setScorecard(loaded.scorecard && Object.keys(loaded.scorecard).length
-      ? loaded.scorecard
+    const hydrated = hydrateProjectConfig(loaded)
+    const nextEndpoints = hydrated.endpoints.length ? hydrated.endpoints : [emptyEndpoint(0)]
+    setRuntime(hydrated.runtime)
+    setEndpoints(nextEndpoints)
+    setAuthSecret(hydrated.runtime.auth.secret || '')
+    setScorecard(hydrated.scorecard && Object.keys(hydrated.scorecard).length
+      ? hydrated.scorecard
       : null)
-    setConnectionApiKey(extractConnectionApiKey(loaded.scorecard))
-    setAuthMode(extractConnectionAuthMode(loaded.scorecard))
-    setAuthScheme(extractConnectionAuthScheme(loaded.scorecard))
-    setScorecardText(
-      loaded.scorecard && Object.keys(loaded.scorecard).length
-        ? scorecardTextWithoutSecrets(loaded.scorecard)
-        : '',
-    )
+    setEndpointJsonTexts(nextEndpoints.map((endpoint, index) => (
+      jsonTextForEndpoint(
+        endpoint,
+        index === 0 ? hydrated.scorecard : null,
+      )
+    )))
     return loaded
   }, [])
 
@@ -220,96 +260,225 @@ export default function AgentWizardPage() {
     setSearchParams({ step: next }, { replace: true })
   }
 
+  const configSummary = useMemo(
+    () => runtimeSummary(runtime, endpoints, authSecret),
+    [runtime, endpoints, authSecret],
+  )
   const scorecardInfo = useMemo(
-    () => scorecardSummary(scorecard || project?.scorecard, connectionApiKey),
-    [scorecard, project, connectionApiKey],
+    () => scorecardSummary(scorecard || project?.scorecard, authSecret),
+    [scorecard, project, authSecret],
   )
 
-  const applyScorecardText = (text, { fillEmpty = true } = {}) => {
+  const updateRuntimeAuth = (changes) => {
+    setRuntime((current) => normalizeRuntime({
+      ...current,
+      auth: { ...current.auth, ...changes },
+    }, { secret: authSecret }))
+  }
+
+  const updateRuntimeDefaults = (changes) => {
+    setRuntime((current) => normalizeRuntime({
+      ...current,
+      defaults: { ...current.defaults, ...changes },
+    }, { secret: authSecret }))
+  }
+
+  const updateEndpointAt = (index, changes) => {
+    setEndpoints((current) => current.map((item, i) => (
+      i === index ? { ...item, ...changes } : item
+    )))
+  }
+
+  const applyScorecardToEndpoint = (index, text, {
+    syncProjectMeta = index === 0,
+  } = {}) => {
     const trimmed = text.trim()
-    if (!trimmed) {
-      setScorecard(null)
-      setScorecardText('')
-      return
-    }
-    const parsed = parseScorecardText(trimmed)
-    const keyFromJson = extractConnectionApiKey(parsed)
-    if (keyFromJson && !connectionApiKey.trim()) {
-      setConnectionApiKey(keyFromJson)
-    }
-    const withoutSecrets = (() => {
-      if (!parsed.connection || typeof parsed.connection !== 'object') return parsed
-      const connection = { ...parsed.connection }
-      delete connection.api_key
-      delete connection.token
-      delete connection.access_token
-      delete connection.bearer_token
-      delete connection.authorization
-      return { ...parsed, connection }
-    })()
-    setScorecard(withoutSecrets)
-    setScorecardText(scorecardTextWithoutSecrets(withoutSecrets))
-    if (fillEmpty && !name.trim() && parsed.name) {
-      setName(String(parsed.name).slice(0, 80))
-    }
-    if (fillEmpty && !description.trim()) {
-      setDescription(descriptionFromScorecard(parsed).slice(0, 5000))
-    }
-  }
-
-  const buildScorecardForSave = () => {
-    let next = scorecard
-    if (scorecardText.trim()) {
-      next = parseScorecardText(scorecardText)
-    }
-    if (!next) return null
-    return withConnectionApiKey(next, connectionApiKey, {
-      authMode,
-      authScheme,
+    if (!trimmed) return null
+    const { endpoint, runtimePatch, scorecard: parsed } = endpointFromScorecardText(
+      trimmed,
+      index,
+    )
+    updateEndpointAt(index, endpoint)
+    setEndpointJsonTexts((current) => {
+      const next = [...current]
+      while (next.length <= index) next.push('')
+      next[index] = scorecardTextWithoutSecrets(parsed)
+      return next
     })
+    if (runtimePatch.secret && !authSecret.trim()) {
+      setAuthSecret(runtimePatch.secret)
+    }
+    setRuntime((current) => normalizeRuntime({
+      ...current,
+      auth: {
+        ...current.auth,
+        header_name: runtimePatch.header_name || current.auth.header_name,
+        scheme: runtimePatch.scheme ?? current.auth.scheme,
+      },
+      defaults: {
+        ...current.defaults,
+        timeout_ms: runtimePatch.timeout_ms || current.defaults.timeout_ms,
+        body_format: runtimePatch.body_format || current.defaults.body_format,
+      },
+    }, { secret: authSecret || runtimePatch.secret || '' }))
+    if (syncProjectMeta) {
+      setScorecard(parsed)
+      if (!name.trim() && parsed.name) setName(String(parsed.name).slice(0, 80))
+      if (!description.trim()) {
+        setDescription(descriptionFromScorecard(parsed).slice(0, 5000))
+      }
+    }
+    return { endpoint, runtimePatch, scorecard: parsed }
   }
 
-  const handleScorecardBlur = () => {
-    if (!scorecardText.trim()) {
-      setScorecard(null)
-      return
-    }
+  const handleEndpointJsonBlur = (index) => {
+    const text = endpointJsonTexts[index] || ''
+    if (!text.trim()) return
     try {
       setError('')
-      applyScorecardText(scorecardText)
+      applyScorecardToEndpoint(index, text)
     } catch (err) {
-      setScorecard(null)
       setError(err.message)
     }
   }
 
-  const clearScorecard = () => {
+  const clearConnectionConfig = () => {
     setScorecard(null)
-    setScorecardText('')
-    setConnectionApiKey('')
-    setAuthMode('session')
-    setAuthScheme('Bearer')
+    setEndpointJsonTexts([''])
+    setAuthSecret('')
+    setRuntime(defaultRuntime())
+    setEndpoints([emptyEndpoint(0)])
+  }
+
+  /** Apply pasted JSON for every endpoint and return synced create/save payload pieces. */
+  const materializeEndpointConfig = () => {
+    let nextEndpoints = normalizeEndpoints(endpoints)
+    let nextRuntime = normalizeRuntime(runtime, { secret: authSecret })
+    let nextSecret = authSecret
+    let nextScorecard = scorecard
+    const nextTexts = [...endpointJsonTexts]
+    const parsedByIndex = []
+
+    endpointJsonTexts.forEach((text, index) => {
+      const trimmed = typeof text === 'string' ? text.trim() : ''
+      if (!trimmed) return
+      const { endpoint, runtimePatch, scorecard: parsed } = endpointFromScorecardText(
+        trimmed,
+        index,
+      )
+      while (nextEndpoints.length <= index) {
+        nextEndpoints.push(emptyEndpoint(nextEndpoints.length))
+      }
+      nextEndpoints[index] = { ...nextEndpoints[index], ...endpoint }
+      nextTexts[index] = scorecardTextWithoutSecrets(parsed)
+      parsedByIndex[index] = parsed
+      if (runtimePatch.secret && !String(nextSecret || '').trim()) {
+        nextSecret = runtimePatch.secret
+      }
+      nextRuntime = normalizeRuntime({
+        ...nextRuntime,
+        auth: {
+          ...nextRuntime.auth,
+          header_name: runtimePatch.header_name || nextRuntime.auth.header_name,
+          scheme: runtimePatch.scheme ?? nextRuntime.auth.scheme,
+        },
+        defaults: {
+          ...nextRuntime.defaults,
+          timeout_ms: runtimePatch.timeout_ms || nextRuntime.defaults.timeout_ms,
+          body_format: runtimePatch.body_format || nextRuntime.defaults.body_format,
+        },
+      }, { secret: nextSecret || '' })
+      if (index === 0) nextScorecard = parsed
+    })
+
+    nextEndpoints = normalizeEndpoints(nextEndpoints)
+    setEndpoints(nextEndpoints)
+    setEndpointJsonTexts(nextTexts.slice(0, Math.max(nextEndpoints.length, 1)))
+    setRuntime(nextRuntime)
+    if (nextSecret !== authSecret) setAuthSecret(nextSecret)
+    if (nextScorecard) setScorecard(nextScorecard)
+    return {
+      endpoints: nextEndpoints,
+      runtime: nextRuntime,
+      secret: nextSecret,
+      scorecard: nextScorecard,
+      parsedByIndex,
+    }
+  }
+
+  const descriptionFromEndpoints = (endpointList, parsedByIndex = []) => {
+    const fieldNames = []
+    const seen = new Set()
+    endpointList.forEach((endpoint, index) => {
+      const schema = parsedByIndex[index]?.input_schema || endpoint.input_schema
+      const properties = schema?.properties
+      if (!properties || typeof properties !== 'object') return
+      Object.keys(properties).forEach((name) => {
+        if (seen.has(name)) return
+        seen.add(name)
+        fieldNames.push(name)
+      })
+    })
+    if (!fieldNames.length) return ''
+    const names = endpointList
+      .map((endpoint) => endpoint.name)
+      .filter(Boolean)
+      .join(' + ')
+    const prefix = names ? `${names}. ` : ''
+    return `${prefix}Collect these inputs for the agent run: ${fieldNames.join(', ')}.`.slice(0, 5000)
   }
 
   const handleCreate = async (event) => {
     event.preventDefault()
     const id = screenIdFrom(name)
-    if (!id || !description.trim()) return
+    if (!id) return
     setBusy(true)
     setError('')
     try {
-      const nextScorecard = buildScorecardForSave()
-      if (nextScorecard) setScorecard(nextScorecard)
+      let materialized
+      try {
+        materialized = materializeEndpointConfig()
+      } catch (err) {
+        setError(err.message)
+        setBusy(false)
+        return
+      }
+      let nextName = name.trim()
+      let nextDescription = description.trim()
+      if (!nextName && materialized.scorecard?.name) {
+        nextName = String(materialized.scorecard.name).slice(0, 80)
+        setName(nextName)
+      }
+      if (!nextDescription) {
+        nextDescription = descriptionFromEndpoints(
+          materialized.endpoints,
+          materialized.parsedByIndex,
+        ) || (materialized.scorecard
+          ? descriptionFromScorecard(materialized.scorecard).slice(0, 5000)
+          : '')
+        if (nextDescription) setDescription(nextDescription)
+      }
+      if (!nextName || !nextDescription) {
+        setError('Agent name and description are required.')
+        setBusy(false)
+        return
+      }
+      const runtimePayload = runtimeForSave(materialized.runtime, materialized.secret, {
+        preserveEmptySecret: false,
+      })
       const created = await createAgentProject({
-        name: name.trim(),
-        description: description.trim(),
+        name: nextName,
+        description: nextDescription,
         presentation: normalizePresentation({
           ...DEFAULT_PRESENTATION,
-          display_name: name.trim(),
-          welcome_description: description.trim().slice(0, 240),
+          display_name: nextName,
+          welcome_description: nextDescription.slice(0, 240),
         }),
-        scorecard: nextScorecard || undefined,
+        runtime: runtimePayload,
+        endpoints: materialized.endpoints,
+        scorecard: materialized.scorecard || undefined,
       })
+      setScorecard(created.scorecard || materialized.scorecard)
       navigate(`/studio/agents/${encodeURIComponent(created.agent_id)}?step=plan`)
     } catch (err) {
       setError(err.message)
@@ -454,18 +623,26 @@ export default function AgentWizardPage() {
     setError('')
     setNotice('')
     try {
-      let nextProject = project
-      const nextScorecard = buildScorecardForSave()
-        || (project.scorecard
-          ? withConnectionApiKey(project.scorecard, connectionApiKey, {
-            authMode,
-            authScheme,
-          })
-          : null)
-      if (nextScorecard) {
-        setScorecard(nextScorecard)
-        nextProject = await updateAgentScorecard(agentId, nextScorecard)
-        setProject(nextProject)
+      let materialized
+      try {
+        materialized = materializeEndpointConfig()
+      } catch (err) {
+        setError(err.message)
+        setBusy(false)
+        return
+      }
+      const runtimePayload = runtimeForSave(materialized.runtime, materialized.secret)
+      let nextProject = await updateAgentRuntime(agentId, runtimePayload)
+      nextProject = await updateAgentEndpoints(agentId, materialized.endpoints)
+      setProject(nextProject)
+      if (materialized.scorecard) {
+        try {
+          nextProject = await updateAgentScorecard(agentId, materialized.scorecard)
+          setScorecard(materialized.scorecard)
+          setProject(nextProject)
+        } catch {
+          // Endpoints already saved; scorecard mirror is derived server-side.
+        }
       }
       const release = await publishAgentProject(agentId, {
         projectRevision: nextProject.revision,
@@ -508,8 +685,8 @@ export default function AgentWizardPage() {
               <p className="simple-kicker">New agent</p>
               <h1>Describe the agent</h1>
               <p>
-                Add a short brief and paste the agent scorecard JSON so screens
-                map to that agent’s input contract.
+                Configure shared auth for this project, add one or more agent
+                endpoints (scorecard input contracts), then write a short brief.
               </p>
             </div>
 
@@ -532,116 +709,231 @@ export default function AgentWizardPage() {
               <div className="scorecard-attach">
                 <div className="scorecard-attach-head">
                   <div>
-                    <strong>Agent scorecard</strong>
+                    <strong>Project runtime auth</strong>
                     <p>
-                      Paste the agent scorecard JSON (input_schema, connection.url,
-                      agent_id). Put the API key in the field below — not in the JSON.
+                      Auth is shared by every endpoint. Secrets stay out of the
+                      scorecard JSON. Bearer mode can also fall back to your
+                      Studio login JWT when no token is stored.
                     </p>
                   </div>
-                  {scorecardText.trim() && (
-                    <button type="button" className="btn btn-link" onClick={clearScorecard}>
-                      Clear
-                    </button>
-                  )}
+                  <button type="button" className="btn btn-link" onClick={clearConnectionConfig}>
+                    Reset
+                  </button>
                 </div>
-                <label className="scorecard-paste">
-                  <span className="sr-only">Scorecard JSON</span>
-                  <textarea
-                    className="form-control"
-                    rows={6}
-                    value={scorecardText}
-                    onChange={(event) => setScorecardText(event.target.value)}
-                    onBlur={handleScorecardBlur}
-                    placeholder='{ "name": "...", "connection": { "url": "https://..." }, "input_schema": { ... } }'
-                    spellCheck={false}
-                  />
-                </label>
                 <label className="scorecard-api-key">
-                  Agent auth
+                  Auth type
                   <select
                     className="form-control"
-                    value={authMode}
-                    onChange={(event) => setAuthMode(event.target.value)}
+                    value={runtime.auth.type}
+                    onChange={(event) => updateRuntimeAuth({ type: event.target.value })}
                   >
-                    <option value="session">Use my Studio login token</option>
-                    <option value="api_key">API key / access token</option>
-                    <option value="api_key_or_session">API key, else Studio login</option>
+                    {AUTH_TYPES.map((item) => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
                   </select>
                 </label>
-                {authMode !== 'session' && (
-                  <>
+                {runtime.auth.type === 'api_key_header' && (
+                  <label className="scorecard-api-key">
+                    Header name
+                    <input
+                      className="form-control"
+                      value={runtime.auth.header_name}
+                      onChange={(event) => updateRuntimeAuth({ header_name: event.target.value })}
+                    />
+                  </label>
+                )}
+                {runtime.auth.type === 'api_key_query' && (
+                  <label className="scorecard-api-key">
+                    Query parameter
+                    <input
+                      className="form-control"
+                      value={runtime.auth.query_param}
+                      onChange={(event) => updateRuntimeAuth({ query_param: event.target.value })}
+                    />
+                  </label>
+                )}
+                {runtime.auth.type === 'bearer' && (
+                  <label className="scorecard-api-key">
+                    Scheme
+                    <select
+                      className="form-control"
+                      value={runtime.auth.scheme}
+                      onChange={(event) => updateRuntimeAuth({ scheme: event.target.value })}
+                    >
+                      <option value="Bearer">Bearer</option>
+                      <option value="">Raw token</option>
+                    </select>
+                  </label>
+                )}
+                {runtime.auth.type !== 'none' && (
+                  <label className="scorecard-api-key">
+                    Secret / access token
+                    <input
+                      className="form-control"
+                      type="password"
+                      autoComplete="off"
+                      value={authSecret}
+                      onChange={(event) => setAuthSecret(event.target.value)}
+                      placeholder={
+                        runtime.auth.has_secret && !authSecret
+                          ? 'Saved on server — leave blank to keep'
+                          : 'Paste token only'
+                      }
+                    />
+                  </label>
+                )}
+                <label className="scorecard-api-key">
+                  Optional base URL
+                  <input
+                    className="form-control"
+                    value={runtime.defaults.base_url}
+                    onChange={(event) => updateRuntimeDefaults({ base_url: event.target.value })}
+                    placeholder="https://agent-builder.example.com"
+                  />
+                </label>
+              </div>
+
+              <div className="scorecard-attach">
+                <div className="scorecard-attach-head">
+                  <div>
+                    <strong>Endpoints</strong>
+                    <p>
+                      Each endpoint has a URL and an input_schema (scorecard). On
+                      finish, Studio calls every enabled endpoint in order.
+                      Screen planning uses the union of all endpoint input fields.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline-secondary"
+                    onClick={() => {
+                      setEndpoints((current) => [...current, emptyEndpoint(current.length)])
+                      setEndpointJsonTexts((current) => [...current, ''])
+                    }}
+                  >
+                    Add endpoint
+                  </button>
+                </div>
+
+                {endpoints.map((endpoint, index) => (
+                  <div className="endpoint-editor" key={`${endpoint.id}-${index}`}>
+                    <div className="scorecard-attach-head">
+                      <strong>{endpoint.name || `Endpoint ${index + 1}`}</strong>
+                      {endpoints.length > 1 && (
+                        <button
+                          type="button"
+                          className="btn btn-link"
+                          onClick={() => {
+                            setEndpoints((current) => current.filter((_, i) => i !== index))
+                            setEndpointJsonTexts((current) => current.filter((_, i) => i !== index))
+                          }}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
                     <label className="scorecard-api-key">
-                      Token format
-                      <select
-                        className="form-control"
-                        value={authScheme}
-                        onChange={(event) => setAuthScheme(event.target.value)}
-                      >
-                        <option value="Bearer">Authorization: Bearer &lt;token&gt;</option>
-                        <option value="">Authorization: &lt;token&gt; (raw)</option>
-                      </select>
-                    </label>
-                    <label className="scorecard-api-key">
-                      Agent API key / access token
+                      Name
                       <input
                         className="form-control"
-                        type="password"
-                        autoComplete="off"
-                        value={connectionApiKey}
-                        onChange={(event) => setConnectionApiKey(event.target.value)}
-                        placeholder="Paste token only — do not include the word Bearer"
+                        value={endpoint.name}
+                        onChange={(event) => updateEndpointAt(index, { name: event.target.value })}
                       />
                     </label>
-                  </>
-                )}
-                {authMode === 'session' && (
-                  <p className="scorecard-hint">
-                    Studio will forward your logged-in access token as{' '}
-                    <code>Authorization: Bearer …</code> to the agent URL.
-                  </p>
-                )}
-                {scorecardInfo ? (
+                    <label className="scorecard-api-key">
+                      URL
+                      <input
+                        className="form-control"
+                        value={endpoint.url}
+                        onChange={(event) => updateEndpointAt(index, { url: event.target.value })}
+                        placeholder="https://…/pipeline"
+                      />
+                    </label>
+                    <div className="endpoint-editor-row">
+                      <label className="scorecard-api-key">
+                        Method
+                        <select
+                          className="form-control"
+                          value={endpoint.method}
+                          onChange={(event) => updateEndpointAt(index, { method: event.target.value })}
+                        >
+                          {['POST', 'PUT', 'PATCH', 'GET'].map((method) => (
+                            <option key={method} value={method}>{method}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="scorecard-api-key">
+                        Body
+                        <select
+                          className="form-control"
+                          value={endpoint.body_format}
+                          onChange={(event) => updateEndpointAt(index, {
+                            body_format: event.target.value,
+                          })}
+                        >
+                          {BODY_FORMATS.map((item) => (
+                            <option key={item.value} value={item.value}>{item.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <label className="scorecard-paste">
+                      Paste scorecard JSON (fills this endpoint)
+                      <textarea
+                        className="form-control"
+                        rows={5}
+                        value={endpointJsonTexts[index] || ''}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          setEndpointJsonTexts((current) => {
+                            const next = [...current]
+                            while (next.length <= index) next.push('')
+                            next[index] = value
+                            return next
+                          })
+                        }}
+                        onBlur={() => handleEndpointJsonBlur(index)}
+                        placeholder='{ "name": "...", "connection": { "url": "https://..." }, "input_schema": { ... } }'
+                        spellCheck={false}
+                      />
+                    </label>
+                    <p className="scorecard-hint">
+                      {Object.keys(endpoint.input_schema?.properties || {}).length
+                        ? `${Object.keys(endpoint.input_schema.properties).length} input field(s)`
+                        : 'No input_schema yet — paste a scorecard or plan from the description.'}
+                    </p>
+                  </div>
+                ))}
+
+                {configSummary.endpointCount > 0 ? (
                   <div className="scorecard-summary">
                     <div className="scorecard-summary-meta">
-                      <span>Scorecard ready</span>
-                      {scorecardInfo.runtimeId && <code>{scorecardInfo.runtimeId}</code>}
-                      {scorecardInfo.version && <em>v{scorecardInfo.version}</em>}
+                      <span>Connection ready</span>
+                      <code>{configSummary.authType}</code>
+                      <em>{configSummary.endpointCount} endpoint(s)</em>
                     </div>
                     <ul>
-                      {scorecardInfo.connection?.url ? (
-                        <li>
-                          <strong>connection.url</strong>
-                          <span>{scorecardInfo.connection.url}</span>
+                      {configSummary.urls.map((url) => (
+                        <li key={url}>
+                          <strong>url</strong>
+                          <span>{url}</span>
                         </li>
-                      ) : null}
+                      ))}
                       <li>
-                        <strong>api_key</strong>
+                        <strong>secret</strong>
                         <span>
-                          {authMode === 'session'
-                            ? 'using Studio login token'
-                            : connectionApiKey.trim() || scorecardInfo.connection?.hasApiKey
-                              ? 'set in the field above'
-                              : 'optional — needed if the agent requires Authorization'}
+                          {configSummary.hasSecret
+                            ? 'set'
+                            : runtime.auth.type === 'bearer'
+                              ? 'optional — Studio login JWT can be forwarded'
+                              : 'optional'}
                         </span>
                       </li>
-                      {scorecardInfo.fieldCount > 0 ? (
-                        scorecardInfo.fields.map((field) => (
-                          <li key={field.name}>
-                            <strong>{field.name}</strong>
-                            <span>
-                              {field.type}
-                              {field.required ? ' · required' : ''}
-                            </span>
-                          </li>
-                        ))
-                      ) : (
-                        <li>No input_schema fields found — plan will use your description.</li>
-                      )}
                     </ul>
                   </div>
                 ) : (
                   <p className="scorecard-hint">
-                    Optional. Without a scorecard, screens are planned from the description only.
+                    Optional. Without endpoints, screens are planned from the description only.
                   </p>
                 )}
               </div>
@@ -711,17 +1003,21 @@ export default function AgentWizardPage() {
             <strong>Agent brief</strong>
             <p>{description || project?.description}</p>
           </div>
-          {(scorecardInfo) && (
+          {(configSummary.endpointCount > 0 || scorecardInfo) && (
             <div className="simple-brief scorecard-plan-brief">
-              <strong>Scorecard mapping</strong>
+              <strong>Endpoint mapping</strong>
               <p>
-                Screens will map onto runtime agent{' '}
+                Screens will map onto{' '}
                 <code>
-                  {scorecardInfo.runtimeId || scorecardInfo.name || 'attached'}
+                  {configSummary.endpointCount
+                    ? `${configSummary.endpointCount} endpoint(s)`
+                    : scorecardInfo?.runtimeId || scorecardInfo?.name || 'attached'}
                 </code>
-                {scorecardInfo.fieldCount
-                  ? ` · ${scorecardInfo.fieldCount} input field(s)`
-                  : ''}
+                {configSummary.fieldCount
+                  ? ` · ${configSummary.fieldCount} input field(s)`
+                  : scorecardInfo?.fieldCount
+                    ? ` · ${scorecardInfo.fieldCount} input field(s)`
+                    : ''}
                 .
               </p>
             </div>
@@ -924,62 +1220,48 @@ export default function AgentWizardPage() {
               <div className="scorecard-attach">
                 <div className="scorecard-attach-head">
                   <div>
-                    <strong>Agent authentication</strong>
+                    <strong>Runtime auth & endpoints</strong>
                     <p>
-                      agent-builder.nervesparks.com needs your Studio login JWT
-                      (<code>Authorization: Bearer &lt;access_token&gt;</code>),
-                      not a short API key string. Prefer “Use my Studio login token”.
+                      Shared project auth applies to every endpoint. On finish,
+                      enabled endpoints are called in order.
                     </p>
                   </div>
                 </div>
                 <label className="scorecard-api-key">
-                  Auth mode
+                  Auth type
                   <select
                     className="form-control"
-                    value={authMode}
-                    onChange={(event) => setAuthMode(event.target.value)}
+                    value={runtime.auth.type}
+                    onChange={(event) => updateRuntimeAuth({ type: event.target.value })}
                   >
-                    <option value="session">Use my Studio login token</option>
-                    <option value="api_key">API key / access token</option>
-                    <option value="api_key_or_session">API key, else Studio login</option>
+                    {AUTH_TYPES.map((item) => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
                   </select>
                 </label>
-                {authMode !== 'session' && (
-                  <>
-                    <label className="scorecard-api-key">
-                      Token format
-                      <select
-                        className="form-control"
-                        value={authScheme}
-                        onChange={(event) => setAuthScheme(event.target.value)}
-                      >
-                        <option value="Bearer">Authorization: Bearer &lt;token&gt;</option>
-                        <option value="">Authorization: &lt;token&gt; (raw)</option>
-                      </select>
-                    </label>
-                    <label className="scorecard-api-key">
-                      <span className="sr-only">Agent API key</span>
-                      <input
-                        className="form-control"
-                        type="password"
-                        autoComplete="off"
-                        value={connectionApiKey}
-                        onChange={(event) => setConnectionApiKey(event.target.value)}
-                        placeholder="Paste token only — do not include Bearer"
-                      />
-                    </label>
-                  </>
+                {runtime.auth.type !== 'none' && (
+                  <label className="scorecard-api-key">
+                    Secret / access token
+                    <input
+                      className="form-control"
+                      type="password"
+                      autoComplete="off"
+                      value={authSecret}
+                      onChange={(event) => setAuthSecret(event.target.value)}
+                      placeholder={
+                        runtime.auth.has_secret && !authSecret
+                          ? 'Saved on server — leave blank to keep'
+                          : 'Paste token only'
+                      }
+                    />
+                  </label>
                 )}
                 <p className="scorecard-hint">
-                  {scorecardInfo?.connection?.url
-                    ? `URL: ${scorecardInfo.connection.url}`
-                    : 'No connection.url on the scorecard yet.'}
+                  {configSummary.urls.length
+                    ? `${configSummary.endpointCount} endpoint(s): ${configSummary.urls.join(' · ')}`
+                    : 'No endpoint URLs configured yet.'}
                   {' · '}
-                  {authMode === 'session'
-                    ? 'Will forward Studio login token'
-                    : connectionApiKey.trim()
-                      ? 'API key ready'
-                      : 'API key empty'}
+                  {configSummary.hasSecret ? 'secret set' : 'no stored secret'}
                 </p>
               </div>
               <label className="simple-form">

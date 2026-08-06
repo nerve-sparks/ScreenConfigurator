@@ -46,13 +46,16 @@ npm run build
 
 ## Agent backend connection
 
-`src/data/agent-release.json` includes the public scorecard snapshot. When
-`scorecard.connection.url` is set, finishing the journey calls that URL through
-`src/lib/api.js` (JSON by default; multipart for agent-builder `/pipeline`
-URLs).
+`src/data/agent-release.json` includes:
 
-Secrets are never shipped in the zip. If the agent expects
-`Authorization: Bearer <JWT>`, put it in `.env`:
+- `runtime` — shared auth type (`bearer`, `api_key_header`, `api_key_query`, `none`)
+- `endpoints` — ordered catalog of URLs + `input_schema` contracts
+
+Finishing the journey calls every enabled endpoint in order through
+`src/lib/api.js` (JSON by default; multipart for agent-builder `/pipeline`
+URLs). Fail-fast stops on the first endpoint error.
+
+Secrets are never shipped in the zip. If auth is required:
 
 ```bash
 VITE_AGENT_API_KEY=Bearer your-access-token
@@ -62,5 +65,5 @@ Then restart `npm run dev`.
 
 ## Collected answers
 
-Without a connection URL, answers stay in the browser and can be downloaded as
-JSON. With a URL, the agent response is shown on the completion screen.
+Without endpoint URLs, answers stay in the browser and can be downloaded as
+JSON. With endpoints, each response is shown on the completion screen.

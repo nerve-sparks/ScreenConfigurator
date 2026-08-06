@@ -68,6 +68,8 @@ class CreateAgentProjectRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
     presentation: ScreenPresentation = Field(default_factory=ScreenPresentation)
     scorecard: Optional[dict] = None
+    runtime: Optional[dict] = None
+    endpoints: Optional[list[dict]] = None
 
 
 class SaveAgentProjectRequest(BaseModel):
@@ -81,6 +83,14 @@ class SaveAgentProjectRequest(BaseModel):
 
 class UpdateAgentScorecardRequest(BaseModel):
     scorecard: dict
+
+
+class UpdateAgentRuntimeRequest(BaseModel):
+    runtime: dict
+
+
+class UpdateAgentEndpointsRequest(BaseModel):
+    endpoints: list[dict] = Field(default_factory=list)
 
 
 class GenerateScreenPlanRequest(BaseModel):

@@ -1,4 +1,4 @@
-"""Forward published journey payloads to the agent scorecard connection URL."""
+"""Forward published journey payloads to project endpoints with shared runtime auth."""
 
 from __future__ import annotations
 
@@ -12,17 +12,20 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import HTTPException
 
-from utils.scorecard import (
-    auth_headers_for_connection,
-    build_run_payload,
-    connection_config,
-    looks_like_jwt,
-    normalize_scorecard,
+from utils.runtime_config import (
+    apply_runtime_auth,
+    endpoint_payload,
+    hydrate_project_config,
+    migrate_from_scorecard,
+    normalize_endpoints,
+    normalize_runtime,
+    resolve_endpoint_url,
 )
+from utils.scorecard import looks_like_jwt, normalize_scorecard
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_METHODS = frozenset({"POST", "PUT", "PATCH"})
+ALLOWED_METHODS = frozenset({"POST", "PUT", "PATCH", "GET", "DELETE"})
 _DATA_URL_RE = re.compile(
     r"^data:(?P<mime>[\w/+.-]+)(?:;charset=[\w-]+)?;base64,(?P<data>.+)$",
     re.IGNORECASE | re.DOTALL,
@@ -34,18 +37,9 @@ def _validate_agent_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(
             status_code=422,
-            detail="Scorecard connection.url must be an absolute http(s) URL.",
+            detail="Endpoint URL must be an absolute http(s) URL.",
         )
     return url
-
-
-def _scorecard_for_run(scorecard: Optional[dict]) -> dict:
-    if not scorecard:
-        return {}
-    try:
-        return normalize_scorecard(scorecard)
-    except ValueError:
-        return dict(scorecard) if isinstance(scorecard, dict) else {}
 
 
 def _form_scalar(value: Any) -> str:
@@ -63,7 +57,6 @@ def _form_scalar(value: Any) -> str:
 def _split_multipart_payload(
     payload: dict[str, Any],
 ) -> tuple[dict[str, str], list[tuple[str, tuple[str, bytes, str]]]]:
-    """Split payload into form fields and file parts (from data URLs)."""
     data: dict[str, str] = {}
     files: list[tuple[str, tuple[str, bytes, str]]] = []
     for key, value in payload.items():
@@ -75,11 +68,9 @@ def _split_multipart_payload(
                 raw = base64.b64decode(match.group("data"))
                 mime = match.group("mime") or "application/octet-stream"
                 ext = mime.split("/")[-1] if "/" in mime else "bin"
-                filename = f"{key}.{ext}"
-                files.append((key, (filename, raw, mime)))
+                files.append((key, (f"{key}.{ext}", raw, mime)))
                 continue
         if isinstance(value, list):
-            # Multiple files / values: send repeated flat keys when possible.
             for index, item in enumerate(value):
                 if isinstance(item, str):
                     match = _DATA_URL_RE.match(item.strip())
@@ -97,101 +88,118 @@ def _split_multipart_payload(
     return data, files
 
 
-async def forward_agent_run(
+def _resolve_body_format(endpoint: dict, url: str, runtime: dict) -> str:
+    body_format = (endpoint.get("body_format") or "").lower()
+    if body_format in {"multipart", "json"}:
+        return body_format
+    default = ((runtime.get("defaults") or {}).get("body_format") or "auto").lower()
+    if default in {"multipart", "json"}:
+        return default
+    if "agent-builder.nervesparks.com" in url and "/pipeline" in url:
+        return "multipart"
+    return "json"
+
+
+def _release_config(
     *,
     scorecard: Optional[dict],
+    runtime: Optional[dict],
+    endpoints: Optional[list],
+) -> tuple[dict, list[dict]]:
+    project = hydrate_project_config(
+        {
+            "scorecard": scorecard or {},
+            "runtime": runtime,
+            "endpoints": endpoints,
+        }
+    ) or {}
+    runtime_value = normalize_runtime(project.get("runtime"), keep_secret=True)
+    try:
+        endpoints_value = normalize_endpoints(project.get("endpoints"))
+    except ValueError:
+        endpoints_value = []
+    if not endpoints_value and scorecard:
+        migrated_runtime, migrated_endpoints = migrate_from_scorecard(scorecard)
+        if not runtime:
+            runtime_value = migrated_runtime
+        endpoints_value = migrated_endpoints
+    return runtime_value, endpoints_value
+
+
+async def _call_endpoint(
+    *,
+    runtime: dict,
+    endpoint: dict,
     values_by_screen: dict,
     studio_agent_id: str,
     release_version: int,
-    caller_authorization: str = "",
+    caller_authorization: str,
 ) -> dict[str, Any]:
-    # Use the full stored scorecard so connection.api_key stays available server-side.
-    card = _scorecard_for_run(scorecard)
-    connection = connection_config(card)
-    url = connection["url"]
+    url = resolve_endpoint_url(runtime, endpoint)
     if not url:
-        return {
-            "status": "local",
-            "message": (
-                "No connection.url on the scorecard. Values were collected locally "
-                "and were not sent to an agent."
-            ),
-            "payload": build_run_payload(card, values_by_screen),
-            "agent_response": None,
-        }
-
+        raise HTTPException(
+            status_code=422,
+            detail=f"Endpoint '{endpoint.get('id')}' has no URL configured.",
+        )
     url = _validate_agent_url(url)
-    method = connection["method"]
+    method = (endpoint.get("method") or "POST").upper()
     if method not in ALLOWED_METHODS:
         raise HTTPException(
             status_code=422,
-            detail=f"Unsupported scorecard connection method '{method}'.",
+            detail=f"Unsupported method '{method}' for endpoint '{endpoint.get('id')}'.",
         )
 
     try:
-        payload = build_run_payload(card, values_by_screen)
+        payload = endpoint_payload(endpoint, values_by_screen)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # agent-builder accepts optional thread_id / human_input when present.
-    flat_extras = {}
+    # Optional agent-builder extras.
     if isinstance(values_by_screen, dict):
         for screen_values in values_by_screen.values():
             if isinstance(screen_values, dict):
                 for key in ("thread_id", "human_input"):
                     if key in screen_values and key not in payload:
-                        flat_extras[key] = screen_values[key]
-    if flat_extras:
-        payload = {**payload, **flat_extras}
+                        payload[key] = screen_values[key]
 
-    timeout = max(1.0, min(connection["timeout_ms"] / 1000.0, 120.0))
-    body_format = connection.get("body_format") or "json"
+    timeout_ms = ((runtime.get("defaults") or {}).get("timeout_ms") or 30000)
+    timeout = max(1.0, min(float(timeout_ms) / 1000.0, 120.0))
+    body_format = _resolve_body_format(endpoint, url, runtime)
+    url, auth_headers = apply_runtime_auth(
+        runtime,
+        url,
+        caller_authorization=caller_authorization,
+    )
     headers = {
         "Accept": "application/json",
         "X-Screen-Studio-Agent-Id": studio_agent_id,
         "X-Screen-Studio-Release": str(release_version),
+        "X-Screen-Studio-Endpoint": str(endpoint.get("id") or ""),
     }
-    auth_headers = auth_headers_for_connection(
-        connection,
-        caller_authorization=caller_authorization,
-    )
     headers.update(auth_headers)
-    runtime_id = card.get("agent_id") or card.get("node_id")
-    if runtime_id:
-        headers["X-Runtime-Agent-Id"] = str(runtime_id)
 
-    auth_header_name = connection.get("auth_header") or "Authorization"
-    auth_value = auth_headers.get(auth_header_name) or ""
-    auth_applied = bool(auth_value)
-    using_session = bool(
-        caller_authorization
-        and auth_value
-        and auth_value == (
-            caller_authorization
-            if caller_authorization.lower().startswith(("bearer ", "token "))
-            else f"Bearer {caller_authorization.strip()}"
-        )
+    auth_applied = bool(auth_headers) or (
+        "?" in url and ((runtime.get("auth") or {}).get("type") == "api_key_query")
     )
     logger.info(
-        "Forwarding published run studio_agent=%s release=%s -> %s %s auth=%s "
-        "mode=%s jwt=%s session=%s body=%s",
+        "Forwarding endpoint studio_agent=%s release=%s endpoint=%s -> %s %s auth=%s body=%s",
         studio_agent_id,
         release_version,
+        endpoint.get("id"),
         method,
         url,
         "yes" if auth_applied else "no",
-        connection.get("auth_mode") or "api_key",
-        "yes" if looks_like_jwt(auth_value) else "no",
-        "yes" if using_session else "no",
         body_format,
     )
 
     request_kwargs: dict[str, Any] = {"headers": headers}
-    if body_format == "multipart":
-        # Let httpx set multipart Content-Type with boundary.
+    if method == "GET":
+        request_kwargs["params"] = {
+            key: _form_scalar(value) for key, value in payload.items()
+        }
+    elif body_format == "multipart":
         headers.pop("Content-Type", None)
         form_data, form_files = _split_multipart_payload(payload)
-        # httpx only emits multipart/form-data when `files` is provided.
         multipart_files: list[tuple[str, Any]] = [
             (key, (None, value)) for key, value in form_data.items()
         ]
@@ -207,35 +215,32 @@ async def forward_agent_run(
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.request(method, url, **request_kwargs)
     except httpx.TimeoutException as exc:
-        logger.warning("Agent run timed out url=%s", url)
         raise HTTPException(
             status_code=504,
-            detail="The agent request timed out. Check connection.timeout_ms and retry.",
+            detail=f"Endpoint '{endpoint.get('id')}' timed out.",
         ) from exc
     except httpx.HTTPError as exc:
-        logger.warning("Agent run failed url=%s error=%s", url, type(exc).__name__)
         raise HTTPException(
             status_code=502,
-            detail=f"Could not reach the agent connection URL ({url}).",
+            detail=f"Could not reach endpoint '{endpoint.get('id')}' ({url}).",
         ) from exc
 
-    body: Any
     content_type = response.headers.get("content-type", "")
     try:
-        if "application/json" in content_type:
-            body = response.json()
-        else:
-            body = response.text
+        body = response.json() if "application/json" in content_type else response.text
     except Exception:
         body = response.text
 
     if response.status_code >= 400:
         detail: Any = {
-            "message": "The agent returned an error response.",
+            "message": f"Endpoint '{endpoint.get('id')}' returned an error.",
+            "endpoint_id": endpoint.get("id"),
+            "endpoint_name": endpoint.get("name"),
             "agent_status": response.status_code,
             "agent_body": body,
             "body_format": body_format,
         }
+        auth_value = next(iter(auth_headers.values()), "") if auth_headers else ""
         agent_output = ""
         if isinstance(body, dict):
             result = body.get("result")
@@ -249,27 +254,83 @@ async def forward_agent_run(
             and not looks_like_jwt(auth_value)
         ):
             detail["hint"] = (
-                "agent-builder expects Authorization: Bearer <JWT access token>. "
-                "The stored API key is not a JWT. Stay logged into Studio and "
-                "retry — Studio will forward your login access token."
-            )
-        if response.status_code == 415:
-            detail["hint"] = (
-                "Agent expects multipart/form-data with flat keys "
-                "(optional thread_id, human_input). Studio now sends that "
-                "format for agent-builder pipeline URLs."
+                "Agent expects Authorization: Bearer <JWT>. Set a JWT in project "
+                "runtime auth, or stay logged into Studio so your session token "
+                "can be forwarded."
             )
         raise HTTPException(status_code=502, detail=detail)
 
     return {
-        "status": "submitted",
-        "message": "Collected inputs were sent to the agent connection URL.",
+        "endpoint_id": endpoint.get("id"),
+        "endpoint_name": endpoint.get("name"),
         "request_url": url,
         "request_method": method,
-        "auth_applied": auth_applied,
-        "auth_mode": connection.get("auth_mode") or "api_key",
         "body_format": body_format,
+        "auth_applied": auth_applied,
         "payload": payload,
         "agent_status": response.status_code,
         "agent_response": body,
+    }
+
+
+async def forward_agent_run(
+    *,
+    scorecard: Optional[dict],
+    values_by_screen: dict,
+    studio_agent_id: str,
+    release_version: int,
+    caller_authorization: str = "",
+    runtime: Optional[dict] = None,
+    endpoints: Optional[list] = None,
+) -> dict[str, Any]:
+    runtime_value, endpoints_value = _release_config(
+        scorecard=scorecard,
+        runtime=runtime,
+        endpoints=endpoints,
+    )
+    enabled = [item for item in endpoints_value if item.get("enabled", True)]
+    enabled = [item for item in enabled if (item.get("url") or "").strip()]
+
+    if not enabled:
+        # Legacy local-only completion when nothing is configured to call.
+        try:
+            card = normalize_scorecard(scorecard) if scorecard else {}
+        except ValueError:
+            card = scorecard or {}
+        from utils.scorecard import build_run_payload
+
+        return {
+            "status": "local",
+            "message": (
+                "No enabled endpoints with URLs. Values were collected locally "
+                "and were not sent to an agent."
+            ),
+            "payload": build_run_payload(card, values_by_screen),
+            "results": [],
+            "agent_response": None,
+        }
+
+    results: list[dict[str, Any]] = []
+    for endpoint in enabled:
+        result = await _call_endpoint(
+            runtime=runtime_value,
+            endpoint=endpoint,
+            values_by_screen=values_by_screen,
+            studio_agent_id=studio_agent_id,
+            release_version=release_version,
+            caller_authorization=caller_authorization,
+        )
+        results.append(result)
+
+    return {
+        "status": "submitted",
+        "message": f"Collected inputs were sent to {len(results)} endpoint(s).",
+        "auth_type": (runtime_value.get("auth") or {}).get("type") or "bearer",
+        "results": results,
+        # Convenience for single-endpoint UIs.
+        "request_url": results[-1]["request_url"] if results else None,
+        "request_method": results[-1]["request_method"] if results else None,
+        "payload": results[-1]["payload"] if results else None,
+        "agent_status": results[-1]["agent_status"] if results else None,
+        "agent_response": results[-1]["agent_response"] if results else None,
     }

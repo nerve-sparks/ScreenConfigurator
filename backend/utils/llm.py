@@ -58,7 +58,7 @@ _MAX_RETRY_OUTPUT_CHARS = 12_000
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off", ""}
 PROMPT_VERSION = "3"
-SCREEN_PLAN_PROMPT_VERSION = "2"
+SCREEN_PLAN_PROMPT_VERSION = "3"
 CONTENT_PROMPT_VERSION = "1"
 
 _router: Router | None = None
@@ -622,12 +622,15 @@ Every screen must contain:
   "confirmation" for content screens.
 - "description": a concise generation brief for that one screen.
 
-When the request includes a scorecard_brief / scorecard_input_fields, map the
-published journey onto that agent contract: collect the listed input fields
-across one or more form screens, keep field names aligned with the scorecard
-where practical, and add only lightweight content screens (welcome /
-confirmation) when helpful. Do not invent connection credentials, health-check
-UIs, orchestrator controls, or result dashboards from output_schema.
+When the request includes an endpoints_brief / scorecard_input_fields, map the
+published journey onto every listed endpoint contract: collect the union of
+their input fields across one or more form screens, keep field names aligned
+with those contracts where practical, and add only lightweight content screens
+(welcome / confirmation) when helpful. Do not invent connection credentials,
+health-check UIs, orchestrator controls, or result dashboards from
+output_schema. When both endpoints_brief and scorecard_brief are present,
+prefer endpoints_brief as the full contract and treat scorecard_brief as
+legacy context only.
 
 Use the smallest useful collection, normally two to six screens and never more
 than twenty. Put screens in the order the user should experience them. Do not
@@ -754,6 +757,7 @@ def generate_screen_plan(
     description: str,
     existing_screens: list[dict],
     scorecard: dict | None = None,
+    endpoints: list | None = None,
 ) -> dict:
     """Generate a validated, identifier-free screen plan."""
     context = {
@@ -768,11 +772,28 @@ def generate_screen_plan(
             for screen in existing_screens
         ],
     }
-    if scorecard:
+    if endpoints:
+        from utils.runtime_config import (
+            build_endpoints_brief,
+            endpoints_input_fields,
+        )
+
+        endpoints_brief = build_endpoints_brief(endpoints)
+        endpoint_fields = endpoints_input_fields(endpoints)
+        if endpoints_brief:
+            context["endpoints_brief"] = endpoints_brief
+        if endpoint_fields:
+            context["scorecard_input_fields"] = endpoint_fields
+    if scorecard and "scorecard_input_fields" not in context:
         from utils.scorecard import build_scorecard_brief, scorecard_input_fields
 
         context["scorecard_brief"] = build_scorecard_brief(scorecard)
         context["scorecard_input_fields"] = scorecard_input_fields(scorecard)
+    elif scorecard:
+        from utils.scorecard import build_scorecard_brief
+
+        # Keep legacy scorecard text as secondary context when endpoints exist.
+        context["scorecard_brief"] = build_scorecard_brief(scorecard)
     return _generate_contract(
         description=json.dumps(context, ensure_ascii=True),
         system_prompt=SCREEN_PLAN_PROMPT,

@@ -5912,6 +5912,28 @@ h4.layout-content-heading {
   background: #faf8f4;
 }
 
+.endpoint-editor {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #e4e0d8;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.endpoint-editor-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .endpoint-editor-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .scorecard-attach-head {
   display: flex;
   gap: 12px;

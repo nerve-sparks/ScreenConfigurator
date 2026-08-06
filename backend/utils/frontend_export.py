@@ -18,6 +18,11 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from .content_manifest import validate_screen_manifest
 from .manifest_migrations import upgrade_legacy_layout
+from .runtime_config import (
+    hydrate_project_config,
+    public_endpoints,
+    public_runtime,
+)
 from .scorecard import public_scorecard
 
 EXPORT_TEMPLATE_ROOT = Path(__file__).resolve().parent.parent / "export_templates"
@@ -232,6 +237,14 @@ def sanitize_release(release: Any) -> dict:
             }
         )
 
+    hydrated = hydrate_project_config(
+        {
+            "scorecard": release.get("scorecard") or {},
+            "runtime": release.get("runtime"),
+            "endpoints": release.get("endpoints"),
+        }
+    ) or {}
+
     return {
         "agent_id": agent_id,
         "version": version,
@@ -245,7 +258,9 @@ def sanitize_release(release: Any) -> dict:
             required=False,
         ),
         "presentation": _public_presentation(release.get("presentation", {})),
-        "scorecard": public_scorecard(release.get("scorecard") or {}),
+        "scorecard": public_scorecard(hydrated.get("scorecard") or {}),
+        "runtime": public_runtime(hydrated.get("runtime") or {}),
+        "endpoints": public_endpoints(hydrated.get("endpoints") or []),
         "screen_ids": list(screen_ids),
         "start_screen_id": start_screen_id,
         "screens": sanitized_screens,

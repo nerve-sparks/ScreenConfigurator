@@ -52,7 +52,13 @@ export default function AgentPage() {
     name: release.name,
     description: release.description,
   })
-  const connectionUrl = release.scorecard?.connection?.url || ''
+  const endpoints = Array.isArray(release.endpoints) ? release.endpoints : []
+  const enabledUrls = endpoints
+    .filter((item) => item?.enabled !== false && item?.url)
+    .map((item) => item.url)
+  const connectionUrl = enabledUrls[0]
+    || release.scorecard?.connection?.url
+    || ''
 
   const handleComplete = async (valuesByScreen) => {
     if (submitting) return
@@ -63,7 +69,7 @@ export default function AgentPage() {
         agentId: release.agent_id,
         releaseVersion: release.version,
         valuesByScreen,
-        scorecard: release.scorecard,
+        release,
       })
       setRunResult(result)
       setSubmitted(valuesByScreen)
@@ -138,14 +144,27 @@ export default function AgentPage() {
             </h1>
             <p>
               {runResult?.status === 'submitted'
-                ? `Answers were posted to ${runResult.requestUrl || 'the agent backend'}.`
+                ? (runResult.message || `Answers were posted to ${runResult.requestUrl || 'the agent backend'}.`)
                 : 'Your answers remain in this browser until the page is refreshed.'}
             </p>
-            {runResult?.agentResponse != null && (
+            {Array.isArray(runResult?.results) && runResult.results.length > 0 ? (
+              runResult.results.map((result) => (
+                <div key={result.endpoint_id || result.request_url} style={{ width: '100%', maxWidth: '40rem' }}>
+                  <strong>
+                    {result.endpoint_name || result.endpoint_id || 'Endpoint'}
+                  </strong>
+                  {result.agent_response != null && (
+                    <pre className="agent-runtime-response">
+                      {formatJson(result.agent_response)}
+                    </pre>
+                  )}
+                </div>
+              ))
+            ) : runResult?.agentResponse != null ? (
               <pre className="agent-runtime-response">
                 {formatJson(runResult.agentResponse)}
               </pre>
-            )}
+            ) : null}
             <div className="route-state-actions">
               <button
                 type="button"

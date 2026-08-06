@@ -105,7 +105,13 @@ export default function PublishedAgentPage() {
     name: release.name,
     description: release.description,
   })
-  const connectionUrl = release.scorecard?.connection?.url || ''
+  const endpoints = Array.isArray(release.endpoints) ? release.endpoints : []
+  const enabledUrls = endpoints
+    .filter((item) => item?.enabled !== false && item?.url)
+    .map((item) => item.url)
+  const connectionUrl = enabledUrls[0]
+    || release.scorecard?.connection?.url
+    || ''
 
   return (
     <div
@@ -164,17 +170,31 @@ export default function PublishedAgentPage() {
             </h2>
             <p>
               {runResult?.status === 'submitted'
-                ? 'Your answers were sent to the agent.'
+                ? (runResult.message || 'Your answers were sent to the agent.')
                 : (runResult?.message || 'The journey finished.')}
             </p>
-            {runResult?.agent_response != null && (
+            {Array.isArray(runResult?.results) && runResult.results.length > 0 ? (
+              runResult.results.map((result) => (
+                <div className="agent-runtime-panel" key={result.endpoint_id || result.request_url}>
+                  <strong>
+                    {result.endpoint_name || result.endpoint_id || 'Endpoint'}
+                    {result.request_url ? ` · ${result.request_url}` : ''}
+                  </strong>
+                  {result.agent_response != null && (
+                    <pre className="agent-runtime-response">
+                      {formatJson(result.agent_response)}
+                    </pre>
+                  )}
+                </div>
+              ))
+            ) : runResult?.agent_response != null ? (
               <div className="agent-runtime-panel">
                 <strong>Agent response</strong>
                 <pre className="agent-runtime-response">
                   {formatJson(runResult.agent_response)}
                 </pre>
               </div>
-            )}
+            ) : null}
             <button
               type="button"
               className="btn btn-primary agent-runtime-restart"

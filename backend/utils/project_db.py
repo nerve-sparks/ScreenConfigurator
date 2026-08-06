@@ -233,14 +233,48 @@ def create_project(
     description: str,
     presentation: Optional[dict] = None,
     scorecard: Optional[dict] = None,
+    runtime: Optional[dict] = None,
+    endpoints: Optional[list] = None,
 ) -> dict:
+    from .runtime_config import (
+        hydrate_project_config,
+        normalize_endpoints,
+        normalize_runtime,
+        scorecard_mirror_from_primary,
+        migrate_from_scorecard,
+    )
+
     now = db._utc_now()
+    card = scorecard or {}
+    if runtime is None and endpoints is None and card:
+        runtime_value, endpoints_value = migrate_from_scorecard(card)
+    else:
+        runtime_value = normalize_runtime(runtime, keep_secret=True)
+        try:
+            endpoints_value = normalize_endpoints(endpoints)
+        except ValueError:
+            endpoints_value = []
+        if not endpoints_value and card:
+            _, endpoints_value = migrate_from_scorecard(card)
+            if not (runtime or {}).get("auth", {}).get("secret"):
+                migrated_runtime, _ = migrate_from_scorecard(card)
+                if migrated_runtime["auth"].get("secret"):
+                    runtime_value = migrated_runtime
+    if not card and endpoints_value:
+        card = scorecard_mirror_from_primary(runtime_value, endpoints_value)
+    elif endpoints_value:
+        card = scorecard_mirror_from_primary(
+            runtime_value, endpoints_value, existing=card
+        )
+
     project = {
         "agent_id": agent_id,
         "name": name,
         "description": description,
         "presentation": presentation or {},
-        "scorecard": scorecard or {},
+        "scorecard": card,
+        "runtime": runtime_value,
+        "endpoints": endpoints_value,
         "screen_ids": [],
         "start_screen_id": None,
         "revision": uuid4().hex,
@@ -250,11 +284,14 @@ def create_project(
         "updated_at": now,
     }
     _projects.insert_one(project)
-    return get_project(agent_id) or {}
+    return hydrate_project_config(get_project(agent_id) or {}) or {}
 
 
 def get_project(agent_id: str) -> Optional[dict]:
-    return _projects.find_one({"agent_id": agent_id}, projection={"_id": False})
+    from .runtime_config import hydrate_project_config
+
+    project = _projects.find_one({"agent_id": agent_id}, projection={"_id": False})
+    return hydrate_project_config(project)
 
 
 def project_exists(agent_id: str) -> bool:
@@ -352,15 +389,93 @@ def save_project(
 
 def save_project_scorecard(agent_id: str, scorecard: dict) -> Optional[dict]:
     """Replace the project's attached agent scorecard (including connection secrets)."""
+    from .runtime_config import migrate_from_scorecard, scorecard_mirror_from_primary
+
     project = get_project(agent_id)
     if project is None:
         return None
+    runtime, endpoints = migrate_from_scorecard(scorecard)
+    # Preserve additional endpoints beyond the primary when only scorecard is updated.
+    existing_endpoints = project.get("endpoints") or []
+    if len(existing_endpoints) > 1 and endpoints:
+        endpoints = [endpoints[0], *existing_endpoints[1:]]
+    mirrored = scorecard_mirror_from_primary(
+        runtime, endpoints, existing=scorecard
+    )
     now = db._utc_now()
     result = _projects.update_one(
         {"agent_id": agent_id, "revision": project["revision"]},
         {
             "$set": {
-                "scorecard": scorecard or {},
+                "scorecard": mirrored,
+                "runtime": runtime,
+                "endpoints": endpoints,
+                "revision": uuid4().hex,
+                "updated_at": now,
+            }
+        },
+    )
+    if result.matched_count == 0:
+        return None
+    return get_project(agent_id)
+
+
+def save_project_runtime(agent_id: str, runtime: dict) -> Optional[dict]:
+    from .runtime_config import (
+        normalize_runtime,
+        scorecard_mirror_from_primary,
+    )
+
+    project = get_project(agent_id)
+    if project is None:
+        return None
+    normalized = normalize_runtime(runtime, keep_secret=True)
+    # Keep previous secret when client omits it but has_secret was true.
+    previous_secret = (project.get("runtime") or {}).get("auth", {}).get("secret") or ""
+    if not normalized["auth"]["secret"] and previous_secret:
+        normalized["auth"]["secret"] = previous_secret
+    endpoints = project.get("endpoints") or []
+    mirrored = scorecard_mirror_from_primary(
+        normalized, endpoints, existing=project.get("scorecard") or {}
+    )
+    now = db._utc_now()
+    result = _projects.update_one(
+        {"agent_id": agent_id, "revision": project["revision"]},
+        {
+            "$set": {
+                "runtime": normalized,
+                "scorecard": mirrored,
+                "revision": uuid4().hex,
+                "updated_at": now,
+            }
+        },
+    )
+    if result.matched_count == 0:
+        return None
+    return get_project(agent_id)
+
+
+def save_project_endpoints(agent_id: str, endpoints: list) -> Optional[dict]:
+    from .runtime_config import (
+        normalize_endpoints,
+        scorecard_mirror_from_primary,
+    )
+
+    project = get_project(agent_id)
+    if project is None:
+        return None
+    normalized = normalize_endpoints(endpoints)
+    runtime = project.get("runtime") or {}
+    mirrored = scorecard_mirror_from_primary(
+        runtime, normalized, existing=project.get("scorecard") or {}
+    )
+    now = db._utc_now()
+    result = _projects.update_one(
+        {"agent_id": agent_id, "revision": project["revision"]},
+        {
+            "$set": {
+                "endpoints": normalized,
+                "scorecard": mirrored,
                 "revision": uuid4().hex,
                 "updated_at": now,
             }
@@ -538,6 +653,8 @@ def duplicate_agent_project(
         source_project.get("description", ""),
         presentation,
         scorecard=deepcopy(source_project.get("scorecard") or {}),
+        runtime=deepcopy(source_project.get("runtime") or {}),
+        endpoints=deepcopy(source_project.get("endpoints") or []),
     )
     id_mapping: dict[str, str] = {}
     try:
@@ -733,6 +850,8 @@ def publish_project_release(
             "description": project.get("description", ""),
             "presentation": deepcopy(project.get("presentation", {})),
             "scorecard": deepcopy(project.get("scorecard") or {}),
+            "runtime": deepcopy(project.get("runtime") or {}),
+            "endpoints": deepcopy(project.get("endpoints") or []),
             "screen_ids": list(project["screen_ids"]),
             "start_screen_id": project["start_screen_id"],
             "screens": snapshots,
@@ -874,6 +993,9 @@ def restore_release(agent_id: str, version: int) -> Optional[dict]:
                 "name": release["name"],
                 "description": release.get("description", ""),
                 "presentation": deepcopy(release.get("presentation", {})),
+                "scorecard": deepcopy(release.get("scorecard") or {}),
+                "runtime": deepcopy(release.get("runtime") or {}),
+                "endpoints": deepcopy(release.get("endpoints") or []),
                 "screen_ids": release_ids,
                 "start_screen_id": release["start_screen_id"],
                 "revision": uuid4().hex,

@@ -34,9 +34,19 @@ from models.schemas import (
     RunPublishedAgentRequest,
     SaveAgentProjectRequest,
     SaveProjectScreenRequest,
+    UpdateAgentEndpointsRequest,
+    UpdateAgentRuntimeRequest,
     UpdateAgentScorecardRequest,
 )
 from utils.scorecard import build_scorecard_brief, normalize_scorecard, public_scorecard
+from utils.runtime_config import (
+    build_endpoints_brief,
+    hydrate_project_config,
+    normalize_endpoints,
+    normalize_runtime,
+    public_endpoints,
+    public_runtime,
+)
 from services.agent_run import forward_agent_run
 from utils.project_db import (
     create_project,
@@ -53,6 +63,8 @@ from utils.project_db import (
     publish_project_release,
     restore_release,
     save_project,
+    save_project_endpoints,
+    save_project_runtime,
     save_project_scorecard,
     set_project_archived,
     set_project_screen_archived,
@@ -81,6 +93,19 @@ def create_agent_project(request: CreateAgentProjectRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
+        runtime = (
+            normalize_runtime(request.runtime, keep_secret=True)
+            if request.runtime is not None
+            else None
+        )
+        endpoints = (
+            normalize_endpoints(request.endpoints)
+            if request.endpoints is not None
+            else None
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
         if project_exists(agent_id):
             raise HTTPException(
                 status_code=409,
@@ -92,6 +117,8 @@ def create_agent_project(request: CreateAgentProjectRequest) -> dict:
             request.description.strip(),
             request.presentation.model_dump(),
             scorecard=scorecard,
+            runtime=runtime,
+            endpoints=endpoints,
         )
     except HTTPException:
         raise
@@ -142,6 +169,61 @@ def put_agent_project_scorecard(
                 detail=f"No agent project found for '{agent_id}'.",
             )
         project = save_project_scorecard(agent_id, scorecard)
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if project is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The agent project changed. Reload it before saving again.",
+        )
+    return common._project_payload(project)
+
+@router.put("/agents/{agent_id}/runtime")
+def put_agent_project_runtime(
+    agent_id: str, request: UpdateAgentRuntimeRequest
+) -> dict:
+    agent_id = common._validated_agent_id(agent_id)
+    try:
+        runtime = normalize_runtime(request.runtime, keep_secret=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        if not project_exists(agent_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        project = save_project_runtime(agent_id, runtime)
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+    if project is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The agent project changed. Reload it before saving again.",
+        )
+    return common._project_payload(project)
+
+
+@router.put("/agents/{agent_id}/endpoints")
+def put_agent_project_endpoints(
+    agent_id: str, request: UpdateAgentEndpointsRequest
+) -> dict:
+    agent_id = common._validated_agent_id(agent_id)
+    try:
+        endpoints = normalize_endpoints(request.endpoints)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        if not project_exists(agent_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No agent project found for '{agent_id}'.",
+            )
+        project = save_project_endpoints(agent_id, endpoints)
     except HTTPException:
         raise
     except PyMongoError as exc:
@@ -229,6 +311,7 @@ def generate_agent_screen_plan(
             description,
             existing,
             scorecard=project.get("scorecard") or {},
+            endpoints=project.get("endpoints") or [],
         )
     except HTTPException:
         raise
@@ -276,6 +359,8 @@ def generate_agent_project_screen(
             for item in existing
         )
         scorecard_brief = build_scorecard_brief(project.get("scorecard") or {})
+        endpoints_brief = build_endpoints_brief(project.get("endpoints") or [])
+        contract_brief = endpoints_brief or scorecard_brief
         brief = (
             f"Agent: {project['name']}\n"
             f"Agent description: {project.get('description', '')}\n"
@@ -283,7 +368,7 @@ def generate_agent_project_screen(
             f"Screen purpose: {request.purpose}\n"
             f"Screen description: {request.description.strip()}\n"
             f"Existing screens to avoid duplicating: {existing_context or 'none'}\n"
-            f"{scorecard_brief}"
+            f"{contract_brief}"
         )
         manifest = (
             generate_schema(brief)
@@ -627,7 +712,16 @@ def get_published_agent_release(
             detail=f"No published agent release found for '{agent_id}'.",
         )
     release = dict(release)
-    release["scorecard"] = public_scorecard(release.get("scorecard") or {})
+    hydrated = hydrate_project_config(
+        {
+            "scorecard": release.get("scorecard") or {},
+            "runtime": release.get("runtime"),
+            "endpoints": release.get("endpoints"),
+        }
+    ) or {}
+    release["scorecard"] = public_scorecard(hydrated.get("scorecard") or {})
+    release["runtime"] = public_runtime(hydrated.get("runtime") or {})
+    release["endpoints"] = public_endpoints(hydrated.get("endpoints") or [])
     return release
 
 
@@ -637,7 +731,7 @@ async def run_published_agent(
     request: RunPublishedAgentRequest,
     http_request: Request,
 ) -> dict:
-    """Map completed screen values onto the scorecard and call connection.url."""
+    """Map completed screen values onto endpoints and call them in order."""
     agent_id = common._validated_agent_id(agent_id)
     try:
         release = get_release(agent_id, request.version)
@@ -650,6 +744,8 @@ async def run_published_agent(
         )
     return await forward_agent_run(
         scorecard=release.get("scorecard") or {},
+        runtime=release.get("runtime"),
+        endpoints=release.get("endpoints"),
         values_by_screen=request.values_by_screen or {},
         studio_agent_id=agent_id,
         release_version=int(release.get("version") or 1),
