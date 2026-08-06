@@ -55,6 +55,15 @@ export default function PublishedAgentPage() {
     }
   }, [agentId, location.search])
 
+  useEffect(() => {
+    if (!release?.name) return undefined
+    const previous = document.title
+    document.title = release.name
+    return () => {
+      document.title = previous
+    }
+  }, [release?.name])
+
   const handleComplete = async (valuesByScreen) => {
     if (submitting) return
     setSubmitting(true)
@@ -80,6 +89,7 @@ export default function PublishedAgentPage() {
       </main>
     )
   }
+
   if (error || !release) {
     return (
       <main className="agent-runtime agent-runtime-state">
@@ -98,26 +108,37 @@ export default function PublishedAgentPage() {
   const connectionUrl = release.scorecard?.connection?.url || ''
 
   return (
-    <div className="agent-runtime" style={presentationStyle(presentation)}>
-      <header className="agent-runtime-header">
+    <div
+      className="agent-runtime"
+      style={presentationStyle(presentation)}
+    >
+      <div className="agent-runtime-atmosphere" aria-hidden="true" />
+
+      <header className="agent-runtime-topbar">
         <div className="agent-runtime-identity">
-          <span className="agent-runtime-mark"><AgentGlyph icon={presentation.icon} size={28} /></span>
+          <span className="agent-runtime-mark">
+            <AgentGlyph icon={presentation.icon} size={20} />
+          </span>
           <div>
+            <p className="agent-runtime-kicker">Agent</p>
             <h1>{release.name}</h1>
-            {release.description ? <p>{release.description}</p> : null}
           </div>
         </div>
+        {release.description ? (
+          <p className="agent-runtime-lede">{release.description}</p>
+        ) : null}
       </header>
 
       <main className="agent-runtime-body">
         {submitError && (
-          <div className="alert alert-danger" role="alert">
-            <strong>Agent request failed</strong>
+          <div className="agent-runtime-alert" role="alert">
+            <strong>Couldn’t finish</strong>
             <span>{submitError}</span>
           </div>
         )}
+
         {!submitted ? (
-          <>
+          <div className={`agent-runtime-stage${submitting ? ' is-busy' : ''}`}>
             <AgentFlow
               key={flowKey}
               screens={release.screens}
@@ -129,71 +150,34 @@ export default function PublishedAgentPage() {
               variant="published"
             />
             {submitting && (
-              <div className="workspace-loading" role="status">
-                <strong>
-                  {connectionUrl
-                    ? 'Sending answers to the agent…'
-                    : 'Finishing the journey…'}
-                </strong>
+              <div className="agent-runtime-busy" role="status">
+                <span className="agent-runtime-busy-pulse" aria-hidden="true" />
+                {connectionUrl ? 'Sending to the agent…' : 'Finishing…'}
               </div>
             )}
-          </>
+          </div>
         ) : (
           <section className="agent-runtime-complete" role="status">
-            <span className="result-check" aria-hidden="true">✓</span>
+            <span className="agent-runtime-complete-mark" aria-hidden="true">✓</span>
             <h2>
-              {runResult?.status === 'submitted'
-                ? 'Sent to the agent'
-                : 'You’re all set'}
+              {runResult?.status === 'submitted' ? 'Done' : 'You’re all set'}
             </h2>
             <p>
-              {runResult?.message
-                || 'The agent journey finished and answers were collected.'}
+              {runResult?.status === 'submitted'
+                ? 'Your answers were sent to the agent.'
+                : (runResult?.message || 'The journey finished.')}
             </p>
-            {runResult?.status === 'submitted' && runResult?.request_url ? (
-              <p className="agent-runtime-forwarded">
-                Forwarded to{' '}
-                <code>{runResult.request_url}</code>
-                {runResult.request_method
-                  ? ` (${runResult.request_method})`
-                  : ''}
-                {typeof runResult.agent_status === 'number'
-                  ? ` · HTTP ${runResult.agent_status}`
-                  : ''}
-                {runResult.auth_applied ? ' · Authorization sent' : ' · no API key'}
-              </p>
-            ) : null}
-            {runResult?.status === 'local' && connectionUrl ? (
-              <p className="agent-runtime-forwarded">
-                Scorecard URL is set, but this run stayed local. Re-publish the
-                agent so the release includes <code>connection.url</code>.
-              </p>
-            ) : null}
-            {runResult?.payload != null && (
+            {runResult?.agent_response != null && (
               <div className="agent-runtime-panel">
-                <strong>Payload sent</strong>
-                <pre className="agent-runtime-response">
-                  {formatJson(runResult.payload)}
-                </pre>
-              </div>
-            )}
-            <div className="agent-runtime-panel">
-              <strong>Agent response</strong>
-              {runResult?.agent_response != null ? (
+                <strong>Agent response</strong>
                 <pre className="agent-runtime-response">
                   {formatJson(runResult.agent_response)}
                 </pre>
-              ) : (
-                <p className="agent-runtime-empty-response">
-                  {runResult?.status === 'submitted'
-                    ? 'The agent returned an empty body.'
-                    : 'No remote agent call was made, so there is no agent response.'}
-                </p>
-              )}
-            </div>
+              </div>
+            )}
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary agent-runtime-restart"
               onClick={() => {
                 setSubmitted(null)
                 setRunResult(null)

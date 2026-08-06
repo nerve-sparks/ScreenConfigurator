@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext.jsx'
 import { SparkIcon } from '../components/RuntimePrimitives.jsx'
+import xsparks_logo from "../assets/xparks_logo.svg"
 
 export default function LoginPage() {
   const { login, busy } = useAuth()
@@ -38,13 +39,7 @@ export default function LoginPage() {
       <header className="app-header simple-header">
         <div className="app-header-inner">
           <Link className="brand" to="/login" aria-label="Agent Screen Studio">
-            <span className="brand-mark">
-              <SparkIcon size={20} />
-            </span>
-            <span>
-              <strong>Agent Screen</strong>
-              <small>Studio</small>
-            </span>
+            <img src={xsparks_logo} alt="NerveSparks" className="brand-logo-image" width={240} height={40} />
           </Link>
         </div>
       </header>
