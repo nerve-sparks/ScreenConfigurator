@@ -7,6 +7,9 @@ The application first uses an LLM to propose an ordered screen plan. After
 human approval, each form or content screen is generated, reviewed, validated,
 and saved independently.
 
+**New here?** Start with the plain-language product overview:
+[docs/PRODUCT_OVERVIEW.md](docs/PRODUCT_OVERVIEW.md).
+
 > [!IMPORTANT]
 > Multi-screen projects create safe form and informational content screens.
 > They do not permit raw HTML, scripts, custom CSS, credentials, or arbitrary
