@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Screen Studio — Presentation</title>
+<style>
+  :root{
+    --bg:#0b0f17;
+    --panel:#121826;
+    --panel-2:#171f30;
+    --line:#26314a;
+    --text:#e8ecf5;
+    --muted:#98a3ba;
+    --accent:#5b8cff;
+    --accent-2:#38d6b0;
+    --warn:#ffb257;
+    --font: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--text); font-family:var(--font);
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+  }
+  /* ---- stage: fixed 16:9, scaled to fit viewport ---- */
+  #stage{
+    position:relative; width:1280px; height:720px;
+    transform-origin:center center;
+  }
+  .slide{
+    position:absolute; inset:0;
+    background:linear-gradient(160deg,#0e1420 0%, #0b0f17 55%, #0a0e15 100%);
+    border:1px solid var(--line); border-radius:18px;
+    padding:56px 64px 64px;
+    display:none; flex-direction:column;
+    box-shadow:0 30px 80px rgba(0,0,0,.55);
+    overflow:hidden;
+  }
+  .slide.active{display:flex; animation:fade .35s ease both;}
+  @keyframes fade{from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:none;}}
+
+  .slide::after{ /* subtle accent glow */
+    content:""; position:absolute; width:520px; height:520px; right:-180px; top:-200px;
+    background:radial-gradient(circle, rgba(91,140,255,.18), transparent 65%);
+    pointer-events:none;
+  }
+
+  .kicker{
+    font-size:13px; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent); font-weight:700; margin-bottom:14px;
+  }
+  h1{font-size:60px; line-height:1.05; margin:0 0 18px; letter-spacing:-.02em;}
+  h2{font-size:38px; line-height:1.15; margin:0 0 8px; letter-spacing:-.01em;}
+  .sub{color:var(--muted); font-size:19px; line-height:1.5; max-width:900px; margin:0 0 28px;}
+  .body{flex:1; min-height:0;}
+
+  .grid{display:grid; gap:18px;}
+  .g2{grid-template-columns:1fr 1fr;}
+  .g3{grid-template-columns:repeat(3,1fr);}
+  .g4{grid-template-columns:repeat(4,1fr);}
+
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:20px 22px;
+  }
+  .card h3{margin:0 0 8px; font-size:19px; letter-spacing:-.01em;}
+  .card p{margin:0; color:var(--muted); font-size:15.5px; line-height:1.55;}
+  .card .tag{
+    display:inline-block; font-size:11.5px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--accent-2); font-weight:700; margin-bottom:10px;
+  }
+
+  ul.clean{margin:0; padding:0; list-style:none;}
+  ul.clean li{
+    position:relative; padding-left:26px; margin-bottom:13px;
+    font-size:17px; line-height:1.5; color:#cfd6e6;
+  }
+  ul.clean li::before{
+    content:""; position:absolute; left:4px; top:9px; width:8px; height:8px;
+    border-radius:2px; background:var(--accent);
+  }
+  ul.clean li b{color:var(--text);}
+  ul.clean.check li::before{background:var(--accent-2);}
+  ul.clean.cross li::before{background:#ff6b6b;}
+
+  /* pipeline */
+  .flow{display:flex; align-items:stretch; gap:10px;}
+  .step{
+    flex:1; background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:16px 14px; text-align:center; position:relative;
+  }
+  .step .n{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:26px; height:26px; border-radius:50%; background:var(--accent);
+    color:#06101f; font-weight:800; font-size:13px; margin-bottom:10px;
+  }
+  .step h4{margin:0 0 6px; font-size:16.5px;}
+  .step p{margin:0; color:var(--muted); font-size:13.5px; line-height:1.45;}
+  .arrow{display:flex; align-items:center; color:var(--line); font-size:22px;}
+
+  .split{display:grid; grid-template-columns:1.05fr .95fr; gap:26px; height:100%;}
+
+  table.tech{width:100%; border-collapse:collapse; font-size:16px;}
+  table.tech td{padding:11px 12px; border-bottom:1px solid var(--line); color:#cfd6e6;}
+  table.tech td:first-child{color:var(--muted); width:38%;}
+  table.tech tr:last-child td{border-bottom:none;}
+
+  .stackbox{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:14px; padding:18px 20px;
+  }
+  .stackbox h3{margin:0 0 12px; font-size:16px; letter-spacing:.08em; text-transform:uppercase; color:var(--accent);}
+  code{font-family:var(--mono); font-size:14px; color:var(--accent-2);
+       background:rgba(56,214,176,.08); padding:2px 6px; border-radius:5px;}
+
+  .pill{
+    display:inline-block; padding:7px 14px; border:1px solid var(--line);
+    border-radius:999px; font-size:14px; color:var(--muted); margin:0 8px 10px 0;
+    background:rgba(255,255,255,.02);
+  }
+
+  .footer{
+    position:absolute; left:64px; right:64px; bottom:22px;
+    display:flex; justify-content:space-between; align-items:center;
+    font-size:13px; color:#5c6883; border-top:1px solid var(--line); padding-top:12px;
+  }
+  .footer .brand{font-weight:700; color:#7d8aa5; letter-spacing:.04em;}
+
+  /* title slide */
+  .title-slide{justify-content:center; align-items:flex-start;}
+  .title-slide .logo{
+    width:56px; height:56px; border-radius:14px; margin-bottom:26px;
+    background:linear-gradient(135deg,var(--accent),var(--accent-2));
+    display:flex; align-items:center; justify-content:center; font-weight:900; color:#06101f; font-size:24px;
+  }
+  .title-slide .meta{display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;}
+
+  /* nav */
+  #nav{
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    display:flex; align-items:center; gap:14px; z-index:20;
+    background:rgba(18,24,38,.9); border:1px solid var(--line);
+    border-radius:999px; padding:8px 16px; backdrop-filter:blur(6px);
+  }
+  #nav button{
+    background:none; border:none; color:var(--text); font-size:17px; cursor:pointer;
+    padding:2px 8px; border-radius:6px; line-height:1;
+  }
+  #nav button:hover{background:rgba(255,255,255,.08);}
+  #counter{font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; min-width:42px; text-align:center;}
+  .hint{position:fixed; top:16px; right:20px; font-size:12px; color:#4d5871; z-index:20;}
+
+  @media print{
+    @page{size:1280px 720px; margin:0;}
+    body{display:block; overflow:visible; background:#fff;}
+    #stage{transform:none !important; width:1280px; height:auto;}
+    .slide{display:flex !important; position:relative; page-break-after:always;
+           height:720px; border-radius:0; border:none;}
+    #nav,.hint{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<div class="hint">← → or Space to navigate · Ctrl+P to export PDF</div>
+
+<div id="stage">
+
+  <!-- ================= SLIDE 1 ================= -->
+  <section class="slide active title-slide">
+    <div class="logo">A</div>
+    <div class="kicker">Product Overview</div>
+    <h1>Agent Screen&nbsp;Studio</h1>
+    <p class="sub" style="font-size:22px; max-width:840px;">
+      Turns “what should users fill in for this agent?” into an <b>approved, versioned,
+      multi-screen experience</b> that can call your real agent endpoints.
+    </p>
+    <div class="meta">
+      <span class="pill">AI-proposed screen plans</span>
+      <span class="pill">Human approval gates</span>
+      <span class="pill">Immutable releases</span>
+      <span class="pill">Exportable frontends</span>
+    </div>
+    <div class="footer"><span class="brand">AGENT SCREEN STUDIO</span><span>01 / 06</span></div>
+  </section>
+
+  <!-- ================= SLIDE 2 ================= -->
+  <section class="slide">
+    <div class="kicker">The Problem</div>
+    <h2>Every agent needs structured input. Hand-building those forms doesn’t scale.</h2>
+    <p class="sub">AI agents need topics, URLs, settings, and files. Building a bespoke form for each
+      one is slow, inconsistent, and easy to get wrong.</p>
+    <div class="body">
+      <div class="grid g2" style="align-items:start;">
+        <div>
+          <ul class="clean">
+            <li><b>Proposes</b> the screens an agent needs, with AI help.</li>
+            <li><b>Reviews</b> — a human approves every field and layout block.</li>
+            <li><b>Publishes</b> a clean, versioned experience in the browser.</li>
+            <li><b>Forwards</b> collected answers to one or more real agent APIs.</li>
+          </ul>
+        </div>
+        <div class="grid" style="gap:14px;">
+          <div class="card"><span class="tag">Product / Ops</span>
+            <p>Describe an agent, approve the generated screens, publish a release.</p></div>
+          <div class="card"><span class="tag">Engineers</span>
+            <p>Attach endpoint URLs, auth, and scorecard contracts; export standalone frontends.</p></div>
+          <div class="card"><span class="tag">End users</span>
+            <p>Open a published agent link and complete a guided, branded journey.</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span class="brand">AGENT SCREEN STUDIO</span><span>02 / 06</span></div>
+  </section>
+
+  <!-- ================= SLIDE 3 ================= -->
+  <section class="slide">
+    <div class="kicker">Creator Workflow</div>
+    <h2>Describe → Plan → Approve → Publish</h2>
+    <p class="sub">The LLM proposes; a human decides. Nothing reaches users without passing
+      backend validation and explicit approval.</p>
+    <div class="body">
+      <div class="flow" style="margin-bottom:26px;">
+        <div class="step"><div class="n">1</div><h4>Describe</h4>
+          <p>Name, brief, shared auth, endpoints, and screen grouping.</p></div>
+        <div class="arrow">›</div>
+        <div class="step"><div class="n">2</div><h4>Plan</h4>
+          <p>AI suggests an ordered screen plan; you rename, reorder, or remove.</p></div>
+        <div class="arrow">›</div>
+        <div class="step"><div class="n">3</div><h4>Generate</h4>
+          <p>Each form or content screen is generated independently and validated.</p></div>
+        <div class="arrow">›</div>
+        <div class="step"><div class="n">4</div><h4>Approve</h4>
+          <p>Review fields and layout blocks; edit, exclude, or add your own.</p></div>
+        <div class="arrow">›</div>
+        <div class="step"><div class="n">5</div><h4>Publish</h4>
+          <p>One atomic snapshot becomes a numbered, immutable release.</p></div>
+      </div>
+      <div class="grid g3">
+        <div class="card"><span class="tag">Preview</span>
+          <p>Test the full ordered journey before publishing. Forms validate before advancing;
+             Back preserves values in browser memory only.</p></div>
+        <div class="card"><span class="tag">Release history</span>
+          <p>Releases are never updated in place. Restore any older version into fresh mutable
+             drafts without rewriting history.</p></div>
+        <div class="card"><span class="tag">Export</span>
+          <p>Download a release as editable React/Vite source plus a self-contained
+             <code>preview.html</code> that opens without Node.js.</p></div>
+      </div>
+    </div>
+    <div class="footer"><span class="brand">AGENT SCREEN STUDIO</span><span>03 / 06</span></div>
+  </section>
+
+  <!-- ================= SLIDE 4 ================= -->
+  <section class="slide">
+    <div class="kicker">Capabilities</div>
+    <h2>What you can build</h2>
+    <p class="sub">Up to 20 independently editable screens per agent project, single-screen or
+      multi-step, wired to one or many agent backends.</p>
+    <div class="body">
+      <div class="grid g2" style="align-items:start;">
+        <div class="grid" style="gap:14px;">
+          <div class="card"><span class="tag">Form screens</span>
+            <p>Validated fields — text, email, URL, file upload via <code>data-url</code> drop areas —
+               owned by React JSON Schema Form.</p></div>
+          <div class="card"><span class="tag">Content screens</span>
+            <p>Welcome, instructions, and confirmation pages built from allowlisted blocks:
+               headings, paragraphs, sections, dividers, callouts.</p></div>
+          <div class="card"><span class="tag">Branded presentation</span>
+            <p>Versioned display name, icon, accent color, welcome copy, submit label, and an
+               optional wizard answer summary.</p></div>
+        </div>
+        <div class="stackbox" style="height:100%;">
+          <h3>Multiple endpoints</h3>
+          <p class="sub" style="font-size:16px; margin-bottom:18px;">
+            One project can talk to several agent APIs. Creators choose how screens map to them:</p>
+          <ul class="clean">
+            <li><b>One shared journey</b> — fields for all endpoints collected across shared screens.</li>
+            <li><b>Separate screens per endpoint</b> — each endpoint gets its own screen group, so a
+              free-text topic never lands in a scrape <code>url</code> field.</li>
+          </ul>
+          <p class="sub" style="font-size:15px; margin:14px 0 0;">
+            On finish, enabled endpoints are called in order. In separate mode, each endpoint
+            receives only values from its own screens.</p>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span class="brand">AGENT SCREEN STUDIO</span><span>04 / 06</span></div>
+  </section>
+
+  <!-- ================= SLIDE 5 ================= -->
+  <section class="slide">
+    <div class="kicker">Architecture</div>
+    <h2>The manifest is the contract</h2>
+    <p class="sub">One JSON manifest is shared by the LLM, the backend, and the frontend — and it
+      passes three validation layers before it can be previewed or published.</p>
+    <div class="body">
+      <div class="split">
+        <div>
+          <div class="stackbox" style="margin-bottom:16px;">
+            <h3>Manifest contents</h3>
+            <ul class="clean" style="margin-bottom:0;">
+              <li><code>input_schema</code> — JSON Schema of what to collect.</li>
+              <li><code>ui_hints.mode</code> — <code>single</code> or <code>wizard</code>.</li>
+              <li><code>ui_hints.field_order</code> — complete display order.</li>
+              <li><code>ui_hints.groups</code> — wizard step definitions.</li>
+              <li><code>ui_hints.blocks</code> — safe content and field placement.</li>
+            </ul>
+          </div>
+          <div class="grid g3">
+            <div class="card" style="padding:14px 16px;"><span class="tag">1 · Safety</span>
+              <p style="font-size:14px;">Rejects HTML, scripts, custom widgets, and identity metadata.</p></div>
+            <div class="card" style="padding:14px 16px;"><span class="tag">2 · Structural</span>
+              <p style="font-size:14px;">Meta-schema enforces the audited field subset, 30-field max.</p></div>
+            <div class="card" style="padding:14px 16px;"><span class="tag">3 · Semantic</span>
+              <p style="font-size:14px;">Constraints, refs, ordering, required fields, group ownership.</p></div>
+          </div>
+        </div>
+        <div class="stackbox">
+          <h3>Technology</h3>
+          <table class="tech">
+            <tr><td>Frontend</td><td>React 18, Vite, RJSF, Tailwind chrome</td></tr>
+            <tr><td>Backend</td><td>FastAPI, Pydantic, JSON Schema</td></tr>
+            <tr><td>LLM gateway</td><td>LiteLLM (Gemini / Vertex AI / OpenAI-compatible proxy)</td></tr>
+            <tr><td>Storage</td><td>MongoDB — mutable drafts + immutable releases</td></tr>
+            <tr><td>Auth</td><td>JWT login against the org auth gateway</td></tr>
+            <tr><td>Observability</td><td>Optional Langfuse generation tracing</td></tr>
+            <tr><td>Testing</td><td>Vitest, Testing Library</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span class="brand">AGENT SCREEN STUDIO</span><span>05 / 06</span></div>
+  </section>
+
+  <!-- ================= SLIDE 6 ================= -->
+  <section class="slide">
+    <div class="kicker">Guarantees &amp; Scope</div>
+    <h2>Deliberately strict, deliberately narrow</h2>
+    <p class="sub">The product is opinionated about what it will not let you ship — and honest about
+      what it is not.</p>
+    <div class="body">
+      <div class="grid g2" style="align-items:start;">
+        <div class="stackbox">
+          <h3 style="color:var(--accent-2);">What it guarantees</h3>
+          <ul class="clean check" style="margin-bottom:0;">
+            <li>Humans approve every AI-suggested field and layout before it goes live.</li>
+            <li>No raw HTML, JavaScript, CSS, or JSON editing anywhere in the editor.</li>
+            <li>Secrets stay in server-side runtime auth — never in browser-visible config or exported ZIPs.</li>
+            <li>Releases are immutable and atomic; restoring never rewrites history.</li>
+            <li>Preview answers, credentials, and LLM reasoning are never persisted.</li>
+          </ul>
+        </div>
+        <div class="stackbox">
+          <h3 style="color:#ff8f8f;">What it does not do</h3>
+          <ul class="clean cross" style="margin-bottom:0;">
+            <li>Run or host the customer’s agent logic.</li>
+            <li>Replace an agent-builder or pipeline platform.</li>
+            <li>Generate result dashboards from an agent’s output schema.</li>
+            <li>Embed a separate backend for every agent.</li>
+            <li>Bypass validation to ship unapproved screens.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="sub" style="margin:24px 0 0; font-size:18px; color:#cfd6e6;">
+        It provides <b>one shared backend</b> for generation, validation, versioning, and retrieval —
+        while keeping the generated UI generic and agent-independent.
+      </p>
+    </div>
+    <div class="footer"><span class="brand">AGENT SCREEN STUDIO</span><span>06 / 06</span></div>
+  </section>
+
+</div>
+
+<div id="nav">
+  <button id="prev" title="Previous slide">‹</button>
+  <span id="counter">1 / 6</span>
+  <button id="next" title="Next slide">›</button>
+</div>
+
+<script>
+  var slides = document.querySelectorAll('.slide');
+  var stage = document.getElementById('stage');
+  var counter = document.getElementById('counter');
+  var i = 0;
+
+  function show(n){
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function(s, idx){ s.classList.toggle('active', idx === i); });
+    counter.textContent = (i + 1) + ' / ' + slides.length;
+    location.hash = 'slide-' + (i + 1);
+  }
+
+  function fit(){
+    var scale = Math.min(window.innerWidth / 1280, window.innerHeight / 720) * 0.94;
+    stage.style.transform = 'scale(' + scale + ')';
+  }
+
+  document.getElementById('next').onclick = function(){ show(i + 1); };
+  document.getElementById('prev').onclick = function(){ show(i - 1); };
+
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); show(i + 1); }
+    if (e.key === 'ArrowLeft'  || e.key === 'PageUp')                    { e.preventDefault(); show(i - 1); }
+    if (e.key === 'Home') show(0);
+    if (e.key === 'End')  show(slides.length - 1);
+  });
+
+  window.addEventListener('resize', fit);
+  fit();
+
+  var start = parseInt((location.hash.match(/slide-(\d+)/) || [])[1], 10);
+  show(isNaN(start) ? 0 : start - 1);
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@ import {
   WorkspaceLoading,
 } from './RuntimePrimitives.jsx'
 import { useAuth } from '../lib/AuthContext.jsx'
+import ThemeToggle from './ui/ThemeToggle.jsx'
 import {
   userDisplayName,
   userEmail,
@@ -143,14 +144,9 @@ export function StudioLayout() {
               >
                 New agent
               </NavLink>
-              {/* <NavLink
-                className={({ isActive }) => (isActive ? 'is-active' : '')}
-                to="/settings"
-              >
-                Settings
-              </NavLink> */}
             </nav>
 
+            <ThemeToggle />
             <UserMenu user={user} />
           </div>
         </div>

@@ -1,0 +1,445 @@
+/**
+ * Agent Screen Studio — design tokens
+ *
+ * Single source of truth for colour, space, type, radius, elevation, and
+ * motion. Nothing below this file should hard-code a raw hex, pixel radius,
+ * or shadow. Two layers:
+ *
+ *   1. Primitives  (--gray-500, --brand-600)  — raw scales, never used directly
+ *      in components except to define layer 2.
+ *   2. Semantic    (--bg-surface, --text-muted) — what components actually use.
+ *
+ * Dark mode redefines ONLY layer 2, so every component inverts for free.
+ */
+
+:root {
+  /* ---------------------------------------------------------------- *
+   * 1. PRIMITIVES
+   * ---------------------------------------------------------------- */
+
+  /* Neutral — slightly cool, tuned for long reading sessions */
+  --gray-25: #fcfcfd;
+  --gray-50: #f8fafc;
+  --gray-100: #f1f4f8;
+  --gray-200: #e5e9f0;
+  --gray-300: #d2d9e3;
+  --gray-400: #9aa5b7;
+  --gray-500: #6b7789;
+  --gray-600: #4d5768;
+  --gray-700: #3a4353;
+  --gray-800: #252d3b;
+  --gray-900: #161d29;
+  --gray-950: #0c111b;
+
+  /* Brand — teal, carried forward from the original palette */
+  --brand-50: #eefbf7;
+  --brand-100: #d3f5eb;
+  --brand-200: #a9ebd9;
+  --brand-300: #71d9c2;
+  --brand-400: #38bfa5;
+  --brand-500: #17a38b;
+  --brand-600: #0f766e;
+  --brand-700: #0d6059;
+  --brand-800: #0e4d49;
+  --brand-900: #0d403d;
+
+  /* Accent — indigo, used for secondary emphasis and data viz */
+  --accent-100: #e4e7ff;
+  --accent-300: #b0b6ff;
+  --accent-500: #6366f1;
+  --accent-600: #4f46e5;
+  --accent-700: #4338ca;
+
+  /* Status */
+  --green-50: #ecfdf3;
+  --green-500: #12b76a;
+  --green-600: #039855;
+  --green-700: #027a48;
+
+  --amber-50: #fffaeb;
+  --amber-500: #f79009;
+  --amber-600: #dc6803;
+  --amber-700: #b54708;
+
+  --red-50: #fef3f2;
+  --red-500: #f04438;
+  --red-600: #d92d20;
+  --red-700: #b42318;
+
+  --blue-50: #eff8ff;
+  --blue-500: #2e90fa;
+  --blue-600: #1570ef;
+  --blue-700: #175cd3;
+
+  /* ---------------------------------------------------------------- *
+   * 2. SEMANTIC — light theme
+   * ---------------------------------------------------------------- */
+
+  /* Backgrounds, back to front */
+  --bg-canvas: var(--gray-100);
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-surface-sunken: var(--gray-50);
+  --bg-subtle: var(--gray-100);
+  --bg-hover: var(--gray-100);
+  --bg-active: var(--gray-200);
+  --bg-inverse: var(--gray-900);
+  --bg-overlay: rgb(12 17 27 / 55%);
+
+  /* Text */
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-700);
+  --text-muted: var(--gray-500);
+  --text-subtle: var(--gray-400);
+  --text-inverse: #ffffff;
+  --text-brand: var(--brand-700);
+  --text-link: var(--brand-700);
+
+  /* Borders */
+  --border-subtle: var(--gray-200);
+  --border-default: var(--gray-300);
+  --border-strong: var(--gray-400);
+  --border-brand: var(--brand-500);
+
+  /* Brand surfaces */
+  --brand-solid: var(--brand-600);
+  --brand-solid-hover: var(--brand-700);
+  --brand-solid-active: var(--brand-800);
+  --brand-surface: var(--brand-50);
+  --brand-surface-hover: var(--brand-100);
+  --brand-border: var(--brand-200);
+  --brand-text-on-solid: #ffffff;
+
+  /* Status surfaces */
+  --success-solid: var(--green-600);
+  --success-surface: var(--green-50);
+  --success-border: #a6f4c5;
+  --success-text: var(--green-700);
+
+  --warning-solid: var(--amber-600);
+  --warning-surface: var(--amber-50);
+  --warning-border: #fedf89;
+  --warning-text: var(--amber-700);
+
+  --danger-solid: var(--red-600);
+  --danger-surface: var(--red-50);
+  --danger-border: #fecdca;
+  --danger-text: var(--red-700);
+
+  --info-solid: var(--blue-600);
+  --info-surface: var(--blue-50);
+  --info-border: #b2ddff;
+  --info-text: var(--blue-700);
+
+  /* Accent — the indigo used by the creation-tool editor and wizard chrome */
+  --accent-solid: var(--accent-600);
+  --accent-surface: #eef0ff;
+  --accent-surface-hover: #e0e3ff;
+  --accent-border: var(--accent-300);
+  --accent-text: var(--accent-700);
+
+  /* Focus */
+  --focus-ring: 0 0 0 3px rgb(15 118 110 / 22%);
+  --focus-ring-danger: 0 0 0 3px rgb(217 45 32 / 22%);
+  --focus-color: var(--brand-600);
+
+  /* ---------------------------------------------------------------- *
+   * 3. ELEVATION — light theme
+   * ---------------------------------------------------------------- */
+  --elev-0: none;
+  --elev-1: 0 1px 2px 0 rgb(12 17 27 / 5%);
+  --elev-2:
+    0 1px 3px 0 rgb(12 17 27 / 8%),
+    0 1px 2px -1px rgb(12 17 27 / 6%);
+  --elev-3:
+    0 4px 12px -2px rgb(12 17 27 / 8%),
+    0 2px 4px -2px rgb(12 17 27 / 5%);
+  --elev-4:
+    0 12px 28px -6px rgb(12 17 27 / 12%),
+    0 4px 10px -4px rgb(12 17 27 / 6%);
+  --elev-5:
+    0 24px 56px -12px rgb(12 17 27 / 18%),
+    0 8px 20px -8px rgb(12 17 27 / 8%);
+
+  /* ---------------------------------------------------------------- *
+   * 4. SPACE — 4px base
+   * ---------------------------------------------------------------- */
+  --space-0: 0;
+  --space-px: 1px;
+  --space-1: 0.25rem;   /*  4 */
+  --space-2: 0.5rem;    /*  8 */
+  --space-3: 0.75rem;   /* 12 */
+  --space-4: 1rem;      /* 16 */
+  --space-5: 1.25rem;   /* 20 */
+  --space-6: 1.5rem;    /* 24 */
+  --space-7: 1.75rem;   /* 28 */
+  --space-8: 2rem;      /* 32 */
+  --space-10: 2.5rem;   /* 40 */
+  --space-12: 3rem;     /* 48 */
+  --space-16: 4rem;     /* 64 */
+  --space-20: 5rem;     /* 80 */
+  --space-24: 6rem;     /* 96 */
+  --space-32: 8rem;     /* 128 */
+
+  /* ---------------------------------------------------------------- *
+   * 5. TYPOGRAPHY
+   * ---------------------------------------------------------------- */
+  --font-sans:
+    "Inter var", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Segoe UI Variable Text", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono:
+    "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-2xs: 0.6875rem;  /* 11 */
+  --text-xs: 0.75rem;     /* 12 */
+  --text-sm: 0.8125rem;   /* 13 */
+  --text-base: 0.875rem;  /* 14 — app default */
+  --text-md: 0.9375rem;   /* 15 */
+  --text-lg: 1.0625rem;   /* 17 */
+  --text-xl: 1.25rem;     /* 20 */
+  --text-2xl: 1.5rem;     /* 24 */
+  --text-3xl: 1.875rem;   /* 30 */
+  --text-4xl: 2.25rem;    /* 36 */
+  --text-5xl: 3rem;       /* 48 */
+  --text-6xl: 3.75rem;    /* 60 */
+
+  --leading-none: 1;
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tighter: -0.03em;
+  --tracking-tight: -0.015em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
+  --tracking-widest: 0.14em;
+
+  /* ---------------------------------------------------------------- *
+   * 6. RADIUS
+   * ---------------------------------------------------------------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 28px;
+  --radius-full: 9999px;
+
+  /* ---------------------------------------------------------------- *
+   * 7. MOTION
+   * ---------------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-instant: 80ms;
+  --duration-fast: 140ms;
+  --duration-normal: 220ms;
+  --duration-slow: 360ms;
+  --duration-slower: 600ms;
+
+  /* ---------------------------------------------------------------- *
+   * 8. LAYOUT
+   * ---------------------------------------------------------------- */
+  --container-sm: 40rem;
+  --container-md: 52rem;
+  --container-lg: 64rem;
+  --container-xl: 76rem;
+  --container-2xl: 86rem;
+
+  --header-height: 60px;
+  --sidebar-width: 264px;
+
+  --z-base: 0;
+  --z-sticky: 20;
+  --z-dropdown: 40;
+  --z-overlay: 60;
+  --z-modal: 70;
+  --z-toast: 90;
+
+  color-scheme: light;
+}
+
+/* ------------------------------------------------------------------ *
+ * DARK THEME
+ * Only semantic tokens are redefined. Primitives stay constant.
+ * ------------------------------------------------------------------ */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-canvas: var(--gray-950);
+    --bg-surface: #131a26;
+    --bg-surface-raised: #18202e;
+    --bg-surface-sunken: #0f1621;
+    --bg-subtle: #1a2330;
+    --bg-hover: #1e2837;
+    --bg-active: #253044;
+    --bg-inverse: var(--gray-50);
+    --bg-overlay: rgb(3 6 12 / 70%);
+
+    --text-primary: #eef1f6;
+    --text-secondary: #c3cbd9;
+    --text-muted: #8d97a8;
+    --text-subtle: #6b7789;
+    --text-inverse: var(--gray-900);
+    --text-brand: var(--brand-300);
+    --text-link: var(--brand-300);
+
+    --border-subtle: #232d3d;
+    --border-default: #2d3849;
+    --border-strong: #3d4a5e;
+    --border-brand: var(--brand-500);
+
+    --brand-solid: var(--brand-500);
+    --brand-solid-hover: var(--brand-400);
+    --brand-solid-active: var(--brand-300);
+    --brand-surface: rgb(23 163 139 / 12%);
+    --brand-surface-hover: rgb(23 163 139 / 18%);
+    --brand-border: rgb(23 163 139 / 32%);
+    --brand-text-on-solid: #06231f;
+
+    --success-solid: var(--green-500);
+    --success-surface: rgb(18 183 106 / 12%);
+    --success-border: rgb(18 183 106 / 30%);
+    --success-text: #6ce9a6;
+
+    --warning-solid: var(--amber-500);
+    --warning-surface: rgb(247 144 9 / 12%);
+    --warning-border: rgb(247 144 9 / 30%);
+    --warning-text: #fec84b;
+
+    --danger-solid: var(--red-500);
+    --danger-surface: rgb(240 68 56 / 12%);
+    --danger-border: rgb(240 68 56 / 30%);
+    --danger-text: #fda29b;
+
+    --info-solid: var(--blue-500);
+    --info-surface: rgb(46 144 250 / 12%);
+    --info-border: rgb(46 144 250 / 30%);
+    --info-text: #84caff;
+
+    --accent-solid: var(--accent-500);
+    --accent-surface: rgb(99 102 241 / 14%);
+    --accent-surface-hover: rgb(99 102 241 / 22%);
+    --accent-border: rgb(99 102 241 / 38%);
+    --accent-text: #b0b6ff;
+
+    --focus-ring: 0 0 0 3px rgb(23 163 139 / 30%);
+    --focus-ring-danger: 0 0 0 3px rgb(240 68 56 / 30%);
+    --focus-color: var(--brand-400);
+
+    --elev-1: 0 1px 2px 0 rgb(0 0 0 / 30%);
+    --elev-2:
+      0 1px 3px 0 rgb(0 0 0 / 40%),
+      0 1px 2px -1px rgb(0 0 0 / 30%);
+    --elev-3:
+      0 4px 12px -2px rgb(0 0 0 / 45%),
+      0 2px 4px -2px rgb(0 0 0 / 30%);
+    --elev-4:
+      0 12px 28px -6px rgb(0 0 0 / 55%),
+      0 4px 10px -4px rgb(0 0 0 / 35%);
+    --elev-5:
+      0 24px 56px -12px rgb(0 0 0 / 65%),
+      0 8px 20px -8px rgb(0 0 0 / 45%);
+
+    color-scheme: dark;
+  }
+}
+
+/* Explicit user choice wins over the OS setting in both directions. */
+:root[data-theme="dark"] {
+  --bg-canvas: var(--gray-950);
+  --bg-surface: #131a26;
+  --bg-surface-raised: #18202e;
+  --bg-surface-sunken: #0f1621;
+  --bg-subtle: #1a2330;
+  --bg-hover: #1e2837;
+  --bg-active: #253044;
+  --bg-inverse: var(--gray-50);
+  --bg-overlay: rgb(3 6 12 / 70%);
+
+  --text-primary: #eef1f6;
+  --text-secondary: #c3cbd9;
+  --text-muted: #8d97a8;
+  --text-subtle: #6b7789;
+  --text-inverse: var(--gray-900);
+  --text-brand: var(--brand-300);
+  --text-link: var(--brand-300);
+
+  --border-subtle: #232d3d;
+  --border-default: #2d3849;
+  --border-strong: #3d4a5e;
+  --border-brand: var(--brand-500);
+
+  --brand-solid: var(--brand-500);
+  --brand-solid-hover: var(--brand-400);
+  --brand-solid-active: var(--brand-300);
+  --brand-surface: rgb(23 163 139 / 12%);
+  --brand-surface-hover: rgb(23 163 139 / 18%);
+  --brand-border: rgb(23 163 139 / 32%);
+  --brand-text-on-solid: #06231f;
+
+  --success-solid: var(--green-500);
+  --success-surface: rgb(18 183 106 / 12%);
+  --success-border: rgb(18 183 106 / 30%);
+  --success-text: #6ce9a6;
+
+  --warning-solid: var(--amber-500);
+  --warning-surface: rgb(247 144 9 / 12%);
+  --warning-border: rgb(247 144 9 / 30%);
+  --warning-text: #fec84b;
+
+  --danger-solid: var(--red-500);
+  --danger-surface: rgb(240 68 56 / 12%);
+  --danger-border: rgb(240 68 56 / 30%);
+  --danger-text: #fda29b;
+
+  --info-solid: var(--blue-500);
+  --info-surface: rgb(46 144 250 / 12%);
+  --info-border: rgb(46 144 250 / 30%);
+  --info-text: #84caff;
+
+  --accent-solid: var(--accent-500);
+  --accent-surface: rgb(99 102 241 / 14%);
+  --accent-surface-hover: rgb(99 102 241 / 22%);
+  --accent-border: rgb(99 102 241 / 38%);
+  --accent-text: #b0b6ff;
+
+  --focus-ring: 0 0 0 3px rgb(23 163 139 / 30%);
+  --focus-ring-danger: 0 0 0 3px rgb(240 68 56 / 30%);
+  --focus-color: var(--brand-400);
+
+  --elev-1: 0 1px 2px 0 rgb(0 0 0 / 30%);
+  --elev-2:
+    0 1px 3px 0 rgb(0 0 0 / 40%),
+    0 1px 2px -1px rgb(0 0 0 / 30%);
+  --elev-3:
+    0 4px 12px -2px rgb(0 0 0 / 45%),
+    0 2px 4px -2px rgb(0 0 0 / 30%);
+  --elev-4:
+    0 12px 28px -6px rgb(0 0 0 / 55%),
+    0 4px 10px -4px rgb(0 0 0 / 35%);
+  --elev-5:
+    0 24px 56px -12px rgb(0 0 0 / 65%),
+    0 8px 20px -8px rgb(0 0 0 / 45%);
+
+  color-scheme: dark;
+}
+
+/* The published agent runtime is tenant-branded. These are overridden
+   inline per release by presentationStyle(); the fallbacks keep the
+   runtime renderable when a release carries no presentation record. */
+:root {
+  --agent-accent: var(--brand-600);
+  --agent-accent-soft: rgb(15 118 110 / 10%);
+  --agent-accent-faint: rgb(15 118 110 / 5%);
+}

@@ -1,4 +1,4 @@
-import Form from '@rjsf/bootstrap-4'
+import Form from '@rjsf/core'
 import validator from '@rjsf/validator-ajv8'
 import { LayoutObjectFieldTemplate } from './LayoutRenderer.jsx'
 

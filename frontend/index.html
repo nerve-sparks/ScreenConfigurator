@@ -3,19 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f766e" />
+    <meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0c111b" media="(prefers-color-scheme: dark)" />
     <meta
       name="description"
       content="Design, review, validate, and publish multi-screen experiences for AI agents."
     />
     <link rel="icon" href="./src/assets/fav.svg" />
     <title>Agent Screen Studio</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <!--
+      Fonts resolve from the OS font stack (see --font-sans in tokens.css).
+      No external font CDN: it is render-blocking, causes layout shift, and is
+      commonly blocked on enterprise networks.
+    -->
+    <script>
+      // Apply the stored theme before first paint to avoid a flash of the
+      // wrong palette. Mirrors the logic in src/lib/ThemeContext.jsx.
+      (function () {
+        try {
+          var stored = localStorage.getItem('ass-theme')
+          if (stored === 'dark' || stored === 'light') {
+            document.documentElement.setAttribute('data-theme', stored)
+          }
+        } catch (e) {
+          /* storage unavailable — fall back to the OS preference */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

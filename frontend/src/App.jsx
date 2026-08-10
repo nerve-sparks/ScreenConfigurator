@@ -10,6 +10,7 @@ const AgentLibraryPage = lazy(() => import('./pages/AgentLibraryPage.jsx'))
 const AgentWizardPage = lazy(() => import('./pages/AgentWizardPage.jsx'))
 const BuilderPage = lazy(() => import('./pages/BuilderPage.jsx'))
 const ContentBuilderPage = lazy(() => import('./pages/ContentBuilderPage.jsx'))
+const LandingPage = lazy(() => import('./pages/LandingPage.jsx'))
 const LoginPage = lazy(() => import('./pages/LoginPage.jsx'))
 const LogoutPage = lazy(() => import('./pages/LogoutPage.jsx'))
 const PublishedAgentPage = lazy(() => import('./pages/PublishedAgentPage.jsx'))
@@ -108,14 +109,9 @@ export default function App() {
         <Route path="*" element={<NotFoundPage />} />
       </Route>
 
-      <Route
-        path="/"
-        element={(
-          <RequireAuth>
-            <Navigate to="/library" replace />
-          </RequireAuth>
-        )}
-      />
+      {/* Public marketing surface. Renders for signed-out visitors and stays
+          reachable when signed in — the CTAs switch to Library / New agent. */}
+      <Route path="/" element={<RouteBoundary><LandingPage /></RouteBoundary>} />
     </Routes>
   )
 }

@@ -2,16 +2,31 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { loadAgentRelease, runPublishedAgent } from '../lib/api.js'
 import AgentFlow from '../components/AgentFlow.jsx'
+import AgentResponse from '../components/AgentResponse.jsx'
 import { normalizePresentation, presentationStyle } from '../lib/presentation.js'
-import { AgentGlyph, SparkIcon, WorkspaceLoading } from '../components/StudioShell.jsx'
+import { AgentGlyph } from '../components/StudioShell.jsx'
+import ThemeToggle from '../components/ui/ThemeToggle.jsx'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle,
+  Download,
+  Sparkles,
+} from '../components/ui/Icons.jsx'
+import '../runtime.css'
 
-function formatJson(value) {
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
+function downloadAnswers(agentId, values) {
+  const blob = new Blob([JSON.stringify(values, null, 2)], {
+    type: 'application/json',
+  })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${agentId}-responses.json`
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
 }
 
 export default function PublishedAgentPage() {
@@ -82,22 +97,38 @@ export default function PublishedAgentPage() {
     }
   }
 
+  const restart = () => {
+    setSubmitted(null)
+    setRunResult(null)
+    setSubmitError('')
+    setFlowKey((key) => key + 1)
+  }
+
   if (loading) {
     return (
-      <main className="agent-runtime agent-runtime-state">
-        <WorkspaceLoading message="Opening agent…" />
-      </main>
+      <div className="ar-shell ar-shell-state">
+        <div className="ar-state-card" role="status">
+          <span className="ar-state-orb" aria-hidden="true" />
+          <h1>Opening agent…</h1>
+          <p>Loading the published release.</p>
+        </div>
+      </div>
     )
   }
 
   if (error || !release) {
     return (
-      <main className="agent-runtime agent-runtime-state">
-        <span className="agent-runtime-mark"><SparkIcon size={28} /></span>
-        <h1>Agent unavailable</h1>
-        <p>{error || 'No published release exists for this agent.'}</p>
-        <Link to="/library">Return to library</Link>
-      </main>
+      <div className="ar-shell ar-shell-state">
+        <div className="ar-state-card is-error">
+          <span className="ar-state-icon"><AlertTriangle size={24} /></span>
+          <h1>Agent unavailable</h1>
+          <p>{error || 'No published release exists for this agent.'}</p>
+          <Link className="btn btn-secondary" to="/library">
+            <ArrowLeft size={16} />
+            Return to library
+          </Link>
+        </div>
+      </div>
     )
   }
 
@@ -105,46 +136,54 @@ export default function PublishedAgentPage() {
     name: release.name,
     description: release.description,
   })
-  const endpoints = Array.isArray(release.endpoints) ? release.endpoints : []
-  const enabledUrls = endpoints
-    .filter((item) => item?.enabled !== false && item?.url)
-    .map((item) => item.url)
-  const connectionUrl = enabledUrls[0]
-    || release.scorecard?.connection?.url
-    || ''
+  const results = Array.isArray(runResult?.results) ? runResult.results : []
+  const wasSubmitted = runResult?.status === 'submitted'
 
   return (
-    <div
-      className="agent-runtime"
-      style={presentationStyle(presentation)}
-    >
-      <div className="agent-runtime-atmosphere" aria-hidden="true" />
+    <div className="ar-shell" style={presentationStyle(presentation)}>
+      <div className="ar-atmosphere" aria-hidden="true" />
 
-      <header className="agent-runtime-topbar">
-        <div className="agent-runtime-identity">
-          <span className="agent-runtime-mark">
-            <AgentGlyph icon={presentation.icon} size={20} />
-          </span>
-          <div>
-            <p className="agent-runtime-kicker">Agent</p>
-            <h1>{release.name}</h1>
+      <header className="ar-topbar">
+        <div className="ar-topbar-inner">
+          <div className="ar-identity">
+            <span className="ar-identity-mark">
+              <AgentGlyph icon={presentation.icon} size={20} />
+            </span>
+            <div className="ar-identity-copy">
+              <span className="ar-identity-kicker">Agent</span>
+              <h1>{release.name}</h1>
+            </div>
+          </div>
+
+          <div className="ar-topbar-actions">
+            {release.version ? (
+              <span className="ar-version-pill">v{release.version}</span>
+            ) : null}
+            <ThemeToggle />
           </div>
         </div>
+
         {release.description ? (
-          <p className="agent-runtime-lede">{release.description}</p>
+          <p className="ar-lede">{release.description}</p>
         ) : null}
       </header>
 
-      <main className="agent-runtime-body">
-        {submitError && (
-          <div className="agent-runtime-alert" role="alert">
-            <strong>Couldn’t finish</strong>
-            <span>{submitError}</span>
+      <main className="ar-body">
+        {submitError ? (
+          <div className="ar-alert" role="alert">
+            <span className="ar-alert-icon"><AlertTriangle size={18} /></span>
+            <div>
+              <strong>Couldn&rsquo;t finish</strong>
+              <span>{submitError}</span>
+            </div>
+            <button type="button" className="btn btn-sm btn-outline-secondary" onClick={restart}>
+              Start over
+            </button>
           </div>
-        )}
+        ) : null}
 
         {!submitted ? (
-          <div className={`agent-runtime-stage${submitting ? ' is-busy' : ''}`}>
+          <div className={`ar-stage-wrap${submitting ? ' is-busy' : ''}`}>
             <AgentFlow
               key={flowKey}
               screens={release.screens}
@@ -155,61 +194,74 @@ export default function PublishedAgentPage() {
               onComplete={handleComplete}
               variant="published"
             />
-            {submitting && (
-              <div className="agent-runtime-busy" role="status">
-                <span className="agent-runtime-busy-pulse" aria-hidden="true" />
-                {connectionUrl ? 'Sending to the agent…' : 'Finishing…'}
-              </div>
-            )}
-          </div>
-        ) : (
-          <section className="agent-runtime-complete" role="status">
-            <span className="agent-runtime-complete-mark" aria-hidden="true">✓</span>
-            <h2>
-              {runResult?.status === 'submitted' ? 'Done' : 'You’re all set'}
-            </h2>
-            <p>
-              {runResult?.status === 'submitted'
-                ? (runResult.message || 'Your answers were sent to the agent.')
-                : (runResult?.message || 'The journey finished.')}
-            </p>
-            {Array.isArray(runResult?.results) && runResult.results.length > 0 ? (
-              runResult.results.map((result) => (
-                <div className="agent-runtime-panel" key={result.endpoint_id || result.request_url}>
-                  <strong>
-                    {result.endpoint_name || result.endpoint_id || 'Endpoint'}
-                    {result.request_url ? ` · ${result.request_url}` : ''}
-                  </strong>
-                  {result.agent_response != null && (
-                    <pre className="agent-runtime-response">
-                      {formatJson(result.agent_response)}
-                    </pre>
-                  )}
-                </div>
-              ))
-            ) : runResult?.agent_response != null ? (
-              <div className="agent-runtime-panel">
-                <strong>Agent response</strong>
-                <pre className="agent-runtime-response">
-                  {formatJson(runResult.agent_response)}
-                </pre>
+
+            {submitting ? (
+              <div className="ar-busy-overlay" role="status">
+                <span className="ar-busy-orb" aria-hidden="true" />
+                <strong>Sending to the agent…</strong>
+                <span>This can take a few moments.</span>
               </div>
             ) : null}
-            <button
-              type="button"
-              className="btn btn-primary agent-runtime-restart"
-              onClick={() => {
-                setSubmitted(null)
-                setRunResult(null)
-                setSubmitError('')
-                setFlowKey((key) => key + 1)
-              }}
-            >
-              Start again
-            </button>
+          </div>
+        ) : (
+          <section className="ar-complete">
+            <div className="ar-complete-head">
+              <span className="ar-complete-mark" aria-hidden="true">
+                <CheckCircle size={30} />
+              </span>
+              <h2>{wasSubmitted ? 'Sent to the agent' : 'You’re all set'}</h2>
+              <p>
+                {wasSubmitted
+                  ? (runResult.message || 'Your answers were delivered successfully.')
+                  : (runResult?.message || 'The journey finished.')}
+              </p>
+            </div>
+
+            {results.length > 0 ? (
+              <div className="ar-response-group">
+                {results.map((result) => (
+                  <AgentResponse
+                    key={result.endpoint_id || result.request_url}
+                    label={
+                      result.endpoint_name
+                      || result.endpoint_id
+                      || 'Endpoint'
+                    }
+                    value={result.agent_response}
+                  />
+                ))}
+              </div>
+            ) : runResult?.agent_response != null ? (
+              <div className="ar-response-group">
+                <AgentResponse value={runResult.agent_response} />
+              </div>
+            ) : null}
+
+            <div className="ar-complete-actions">
+              <button type="button" className="btn btn-primary" onClick={restart}>
+                <Sparkles size={16} />
+                Start again
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-secondary"
+                onClick={() => downloadAnswers(agentId, submitted)}
+              >
+                <Download size={16} />
+                Download answers
+              </button>
+            </div>
           </section>
         )}
       </main>
+
+      <footer className="ar-footer">
+        <span>
+          {presentation.display_name || release.name}
+          {release.version ? ` · Release ${release.version}` : ''}
+        </span>
+        <span>Answers stay in your browser until you finish.</span>
+      </footer>
     </div>
   )
 }
